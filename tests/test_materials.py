@@ -105,6 +105,34 @@ class TestRatioClassify(unittest.TestCase):
         self.assertTrue(any("宽高比" in n for n in m.notes))
 
 
+@unittest.skipUnless(HAS_FFMPEG, "需要 ffmpeg/ffprobe")
+class TestDouyinCoverDetection(unittest.TestCase):
+    """抖音封面按真实比例检测：3:4 进竖槽、16:9 进横槽，4:3 不误用。"""
+
+    def setUp(self):
+        from smu.platforms.sau import SauAdapter
+        self.adapter = SauAdapter("douyin")
+        self.tmp = Path(tempfile.mkdtemp())
+        d = self.tmp / "01_x"
+        d.mkdir()
+        (d / "01_x.mp4").write_bytes(b"x")
+        make_jpg(d / "01_x_封面_竖版3比4.jpg", 1080, 1440)    # 0.75
+        make_jpg(d / "01_x_封面_B站16比9.jpg", 1920, 1080)    # 1.78
+        make_jpg(d / "01_x_封面_B站首页4比3.jpg", 1440, 1080)  # 1.33（不该被选中）
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_detect(self):
+        m = M.scan(self.tmp)[0]
+        c = self.adapter.detect_douyin_covers(m)
+        self.assertIsNotNone(c["portrait"])
+        self.assertIn("3比4", c["portrait"].name)        # 竖槽=3:4
+        self.assertIsNotNone(c["landscape"])
+        self.assertIn("16比9", c["landscape"].name)       # 横槽=16:9，不是4:3
+        self.assertNotIn("4比3", c["landscape"].name)
+
+
 class TestParseCopyAndSelect(unittest.TestCase):
     def test_parse_copy(self):
         with tempfile.TemporaryDirectory() as td:

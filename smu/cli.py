@@ -18,6 +18,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import os
+import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +33,24 @@ DEFAULTS = {
     "topic": "bilibili法考季",
     "ensure_tags": ["法考邪修流", "2026法考备考"],
 }
+
+# 视频之间的随机间隔默认区间（秒），按平台区分：
+#   B站走 API 上传，间隔可短；抖音/小红书是真实账号浏览器操作，间隔要大、要随机。
+_INTERVAL_DEFAULTS = {
+    "bilibili": (30, 90),
+    "_browser": (300, 720),   # 抖音/小红书/快手：5~12 分钟
+}
+
+
+def resolve_interval(args) -> tuple[int, int]:
+    """返回 (最小秒, 最大秒)。命令行显式传了就用命令行，否则用平台默认。"""
+    lo = getattr(args, "min_interval", None)
+    hi = getattr(args, "max_interval", None)
+    if lo is None or hi is None:
+        d_lo, d_hi = _INTERVAL_DEFAULTS.get(args.platform, _INTERVAL_DEFAULTS["_browser"])
+        lo = d_lo if lo is None else lo
+        hi = d_hi if hi is None else hi
+    return (min(lo, hi), max(lo, hi))
 
 
 def fail(msg: str):
@@ -92,6 +112,8 @@ def cmd_status(args) -> None:
 
 
 def cmd_login(args) -> None:
+    if getattr(args, "account", None):
+        os.environ["SMU_ACCOUNT"] = args.account
     get_platform(args.platform).login()
 
 
@@ -191,10 +213,16 @@ def cmd_upload(args) -> None:
             record["source"] = "smu"
             published[mat.name] = record
             save_state(state)
-            print(f"    ✅ 投稿成功 {record.get('bvid', '')}")
-        if i < len(targets) - 1 and not args.dry_run and args.interval > 0:
-            print(f"    …等待 {args.interval}s（避免触发风控）")
-            time.sleep(args.interval)
+            ident = record.get("bvid") or record.get("id") or ""
+            sched = f"（定时 {record['scheduled']}）" if record.get("scheduled") else ""
+            print(f"    ✅ 投稿成功 {ident}{sched}")
+        if i < len(targets) - 1 and not args.dry_run:
+            lo, hi = resolve_interval(args)
+            if hi > 0:
+                wait = random.randint(lo, hi)
+                m, s = divmod(wait, 60)
+                print(f"    …随机等待 {f'{m}分{s}秒' if m else f'{s}秒'}（拟人化间隔，避免规律节奏被风控）")
+                time.sleep(wait)
 
     print(f"\n完成：成功 {len(targets) - len(failed)}，失败 {len(failed)}")
     if failed:
@@ -223,6 +251,7 @@ def main() -> None:
 
     p = sub.add_parser("login", help="扫码登录")
     add_common(p, with_dir=False)
+    p.add_argument("--account", help="账号标签（多账号区分，抖音/小红书用），默认 main")
     p.set_defaults(func=cmd_login)
 
     p = sub.add_parser("renew", help="刷新B站登录态")
@@ -251,10 +280,15 @@ def main() -> None:
     p.add_argument("--human-type2", type=int, default=1010, help="新分区，默认 1010 知识")
     p.add_argument("--ai-statement", action=argparse.BooleanOptionalAction, default=True,
                    help="创作声明「含AI生成内容」（默认开）")
-    p.add_argument("--private", action="store_true", help="仅自己可见（测试）")
-    p.add_argument("--dtime", type=int, help="定时发布：10位时间戳，距提交>4小时")
-    p.add_argument("--line", help="上传线路 bda2/ws/qn 等")
-    p.add_argument("--interval", type=int, default=30, help="批量间隔秒数，默认 30")
+    p.add_argument("--private", action="store_true", help="仅自己可见（测试，仅B站）")
+    p.add_argument("--dtime", type=int, help="B站定时发布：10位时间戳，距提交>4小时")
+    p.add_argument("--line", help="B站上传线路 bda2/ws/qn 等")
+    # 抖音/小红书等浏览器平台
+    p.add_argument("--account", default="main", help="账号标签（抖音/小红书多账号区分），默认 main")
+    p.add_argument("--schedule", help="抖音/小红书定时发布：格式 'YYYY-MM-DD HH:MM'")
+    # 拟人化随机间隔（不传则按平台默认：B站30~90s，抖音/小红书300~720s）
+    p.add_argument("--min-interval", type=int, default=None, help="视频间最小间隔秒数")
+    p.add_argument("--max-interval", type=int, default=None, help="视频间最大间隔秒数")
     p.add_argument("--dry-run", action="store_true", help="只打印命令不上传")
     p.set_defaults(func=cmd_upload)
 

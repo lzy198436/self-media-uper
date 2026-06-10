@@ -21,6 +21,7 @@ ln -s <本仓库绝对路径>/skills/self-media-uper ~/.hermes/skills/self-media
 ## 使用
 
 ```bash
+# B站（默认平台，biliup 引擎）
 smu login                 # 扫码登录（一次）
 smu scan   <素材目录>     # 素材完整性检查
 smu sync   <素材目录>     # 与B站已发布稿件对账（识别手动投过的）
@@ -28,7 +29,15 @@ smu status <素材目录>     # 进度
 smu upload <素材目录> 11-20        # 投序号11到20
 smu upload <素材目录> --all        # 投全部未投的
 smu upload <素材目录> 11 --private # 仅自己可见测试
+
+# 抖音 / 小红书 / 快手（social-auto-upload 引擎，见 docs/sau-setup.md）
+smu login  --platform douyin --account 小号名               # 扫码登录抖音
+smu upload <素材目录> 11 --platform douyin --account 小号名 \
+           --schedule "2026-06-13 12:00"                    # 定时发布
 ```
+
+平台引擎：B站 = biliup（API）；抖音/小红书/快手 = social-auto-upload（patchright 隐身浏览器）。
+都藏在 `platforms/` 适配器后面，smu 一套命令通吃，引擎可换。
 
 ## 素材目录约定（请尽量按此整理素材）
 
@@ -72,17 +81,31 @@ smu upload <素材目录> 11 --private # 仅自己可见测试
 - 话题/活动（`topic_id`/`mission_id`，按名称搜索缓存）
 - 仅自己可见（`--private`）、定时发布（`--dtime`）、批量限速、断点续投、防重复
 
+## 防封：拟人化与节奏控制
+
+抖音/小红书是真实账号浏览器操作，防封靠两层：
+
+- **视频间随机大间隔**（smu 控制，主要杠杆）：抖音/小红书默认随机 5~12 分钟一条，
+  `--min-interval/--max-interval` 可调。
+- **发布内随机延迟**（运行时补丁，不改 sau）：把 sau 的固定等待按 1.2~2.2 倍 + 抖动拉长。
+  详见 docs/sau-setup.md。
+
+封面**按真实宽高比检测**（ffprobe）选图，不靠文件名，比例对不上的不传。
+建议：小号试水、低频、定时、隔开时间，养几天确认稳再放量。
+
 ## 架构
 
 ```
 smu/
-├── cli.py            # scan/status/login/renew/sync/mark/upload
-├── materials.py      # 素材扫描配对 + 文案解析
+├── cli.py            # scan/status/login/renew/sync/mark/upload + 随机间隔
+├── materials.py      # 素材扫描配对（宽容识别）+ 文案解析 + ffprobe 比例
 ├── state.py          # ~/.self-media-uper/ 状态与凭据
 └── platforms/
-    ├── base.py       # PlatformAdapter 接口
-    └── bilibili.py   # biliup + member API
+    ├── base.py             # PlatformAdapter 接口
+    ├── bilibili.py         # biliup + member API
+    ├── sau.py              # 抖音/小红书/快手（social-auto-upload）
+    └── _sau_humanize.py    # sau 运行时补丁：随机延迟 + macOS 兼容
 ```
 
 新平台 = 在 `platforms/` 实现 `PlatformAdapter`（login/publish/sync）并在 `__init__.py` 注册。
-抖音/小红书/视频号/微博无公开 API，规划用 Playwright 浏览器自动化实现。
+视频号/微博待接入。
