@@ -34,6 +34,7 @@ DEFAULTS = {
 
 
 def fail(msg: str):
+    sys.stdout.flush()
     print(f"错误：{msg}", file=sys.stderr)
     sys.exit(1)
 
@@ -60,12 +61,22 @@ def cmd_scan(args) -> None:
     state = load_state()
     published = platform_state(state, args.platform)["published"]
     print(f"素材目录：{args.dir}（{len(mats)} 个）  平台：{args.platform}")
+    n_warn = 0
     for m in mats:
         mark = "✅" if m.name in published else "· "
         missing = m.missing_for_bilibili()
         note = f"  ⚠️缺{','.join(missing)}" if missing else ""
+        n_warn += bool(missing or m.notes)
         bvid = published.get(m.name, {}).get("bvid", "")
         print(f"  {mark} {m.name}{note}  {bvid}")
+        for n in m.notes:
+            print(f"       ↳ {n}")
+    if not mats:
+        print("⚠️ 没有识别到任何素材。支持两种布局：①每素材一个子文件夹 ②视频直接平铺在目录里；"
+              "视频格式 mp4/mov/mkv/webm。目录约定详见 README。")
+    elif n_warn:
+        print(f"\n⚠️ {n_warn} 个素材有缺件或宽容识别提示；缺关键件的素材默认会被 upload 拒绝"
+              "（--allow-incomplete 可放行）。")
 
 
 def cmd_status(args) -> None:
@@ -136,14 +147,37 @@ def cmd_upload(args) -> None:
             fail(f"已投稿过（--force 可重投）：{', '.join(already)}")
     else:
         fail("请指定素材（序号/范围/--all），如：smu upload <目录> 11-20")
-    targets = [m for m in targets if m.video]
     if not targets:
         print("没有待投稿的素材")
         return
 
-    print(f"待投稿 {len(targets)} 个 → {args.platform}"
+    # ---- 上传前预检：逐素材展示将提交的内容，缺关键件默认拒绝 ----
+    print(f"预检 {len(targets)} 个素材 → {args.platform}"
           + ("（仅自己可见）" if args.private else "")
           + f"，标题前缀：{args.title_prefix}")
+    incomplete: list[str] = []
+    for m in targets:
+        meta = platform.build_meta(m, args) if hasattr(platform, "build_meta") else {}
+        missing = m.missing_for_bilibili()
+        head = "❌" if missing else "✓ "
+        print(f"\n{head} {m.name}" + (f"  ⚠️缺{','.join(missing)}" if missing else ""))
+        for n in m.notes:
+            print(f"     ↳ {n}")
+        print(f"     视频: {m.video.name if m.video else '（无）'}")
+        print(f"     封面: 16:9 {'✓ ' + m.cover169.name if m.cover169 else '✗ B站自动截帧'}"
+              f" | 4:3 {'✓ ' + m.cover43.name if m.cover43 else '✗ 不设'}")
+        if meta:
+            desc_head = (meta.get("desc") or "").split("\n")[0][:50]
+            print(f"     标题: {meta.get('title', '')}")
+            print(f"     简介: {desc_head + '…' if meta.get('desc') else '（空）'}")
+            print(f"     标签: {','.join(meta.get('tags', []))}")
+        if missing:
+            incomplete.append(m.name)
+    if incomplete and not args.allow_incomplete:
+        fail(f"{len(incomplete)} 个素材缺关键件（视频/封面/B站文案），已全部拒绝上传。\n"
+             f"  缺件素材：{' '.join(incomplete)}\n"
+             f"  补齐素材后重试，或确认接受降级（无封面=B站截帧、无文案=空简介）再加 --allow-incomplete。")
+    targets = [m for m in targets if m.video]
     failed = []
     for i, mat in enumerate(targets):
         print(f"\n[{i + 1}/{len(targets)}] {mat.name}")
@@ -209,6 +243,8 @@ def main() -> None:
     p.add_argument("items", nargs="*", help="序号/范围/文件夹名，如 11 或 11-20")
     p.add_argument("--all", action="store_true", help="投全部未投稿素材")
     p.add_argument("--force", action="store_true", help="允许重投已标记素材")
+    p.add_argument("--allow-incomplete", action="store_true",
+                   help="允许缺封面/文案的素材降级上传（默认拒绝）")
     p.add_argument("--title-prefix", default=None, help="标题前缀（默认读目录 smu.json 或内置默认）")
     p.add_argument("--topic", default=None, help="参与话题（默认 bilibili法考季），传空串禁用")
     p.add_argument("--tid", type=int, default=124, help="旧分区 tid，默认 124 社科·法律·心理")
