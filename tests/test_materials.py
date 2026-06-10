@@ -129,8 +129,8 @@ class TestDouyinCoverDetection(unittest.TestCase):
         self.assertIsNotNone(c["portrait"])
         self.assertIn("3比4", c["portrait"].name)        # 竖槽=3:4
         self.assertIsNotNone(c["landscape"])
-        self.assertIn("16比9", c["landscape"].name)       # 横槽=16:9，不是4:3
-        self.assertNotIn("4比3", c["landscape"].name)
+        self.assertIn("4比3", c["landscape"].name)        # 横槽=4:3，不是16:9
+        self.assertNotIn("16比9", c["landscape"].name)
 
 
 class TestParseCopyAndSelect(unittest.TestCase):

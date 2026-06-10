@@ -147,9 +147,10 @@ class SauAdapter(PlatformAdapter):
         return best, best_ratio, best_diff
 
     def detect_douyin_covers(self, material: Material) -> dict:
-        """传图前先检测：按真实比例挑 3:4 竖封面 + 16:9 横封面，不靠文件名。
+        """传图前先检测：按真实比例挑 3:4 竖封面 + 4:3 横封面，不靠文件名。
 
-        返回 {portrait, landscape, notes, warnings}；比例对不上的不传（避免传错）。
+        抖音：竖封面 3:4，横封面 4:3（不是 16:9）。比例对不上的不传（避免传错）。
+        返回 {portrait, landscape, notes, warnings}。
         """
         cands = [c for c in (material.cover_vertical, material.cover169,
                              material.cover43) if c]
@@ -158,7 +159,7 @@ class SauAdapter(PlatformAdapter):
         cands = [c for c in cands if not (c in seen or seen.add(c))]
 
         portrait, pr, pd = self._pick_cover(cands, 3 / 4, want_portrait=True)    # 竖 3:4
-        landscape, lr, ld = self._pick_cover(cands, 16 / 9, want_portrait=False)  # 横 16:9
+        landscape, lr, ld = self._pick_cover(cands, 4 / 3, want_portrait=False)   # 横 4:3
 
         notes, warnings = [], []
         if portrait and pd <= _RATIO_TOL:
@@ -167,10 +168,10 @@ class SauAdapter(PlatformAdapter):
             portrait = None
             warnings.append("没有比例接近 3:4 的竖封面，竖封面不传（抖音会自动截帧）")
         if landscape and ld <= _RATIO_TOL:
-            notes.append(f"横封面 ✓ {landscape.name}（实测 {lr:.2f}≈1.78）")
+            notes.append(f"横封面 ✓ {landscape.name}（实测 {lr:.2f}≈1.33）")
         else:
             landscape = None
-            warnings.append("没有比例接近 16:9 的横封面，横封面不传")
+            warnings.append("没有比例接近 4:3 的横封面，横封面不传")
         return {"portrait": portrait, "landscape": landscape, "notes": notes, "warnings": warnings}
 
     # ---------- 发布 ----------
