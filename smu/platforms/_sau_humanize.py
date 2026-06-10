@@ -71,6 +71,22 @@ def install() -> None:
 
     pa.Page.wait_for_timeout = humanized_wait
 
+    # ---- 补丁 4：抖音自主声明类型可配（默认 sau 写死「个人观点」）----
+    # 抖音发布必选「自主声明」，sau 默认选「内容为个人观点或见解」。
+    # 通过 SMU_DOUYIN_DECLARATION 改成「内容由AI生成」等（取值须与抖音弹窗选项完全一致）。
+    decl = os.environ.get("SMU_DOUYIN_DECLARATION")
+    if decl:
+        try:
+            from uploader.douyin_uploader.main import DouYinBaseUploader
+            orig_decl = DouYinBaseUploader.set_self_declaration
+
+            async def patched_decl(self, page, declaration=decl, _orig=orig_decl):
+                return await _orig(self, page, declaration)
+
+            DouYinBaseUploader.set_self_declaration = patched_decl
+        except Exception:
+            pass
+
     # ---- 补丁 3（macOS 兼容）：Control+A 全选 → Meta+A ----
     # sau 是按 Windows/Linux 写的，用 Control+KeyA 全选输入框（比如设定时时清空日期）。
     # macOS 全选是 Cmd(Meta)+A，否则选不中，会导致「定时<2小时」等 bug。

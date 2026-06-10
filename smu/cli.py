@@ -28,10 +28,11 @@ from . import materials as M
 from .platforms import get_platform
 from .state import STATE_FILE, load_state, platform_state, save_state
 
+# 中性默认值：具体项目的标题前缀/话题/固定标签放素材目录的 smu.json，不写死在代码里。
 DEFAULTS = {
-    "title_prefix": "【2026法考邪修流（民诉）】",
-    "topic": "bilibili法考季",
-    "ensure_tags": ["法考邪修流", "2026法考备考"],
+    "title_prefix": "",
+    "topic": "",
+    "ensure_tags": [],
 }
 
 # 视频之间的随机间隔默认区间（秒），按平台区分：

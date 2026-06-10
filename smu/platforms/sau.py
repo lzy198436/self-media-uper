@@ -41,6 +41,9 @@ TITLE_MAX = 30      # 抖音/小红书标题较短
 #   小红书：话题上限较宽，给 10
 _MAX_TAGS = {"douyin": 5, "xiaohongshu": 10, "kuaishou": 5}
 
+# 抖音自主声明类型（取值须与抖音发布页弹窗选项文字完全一致）
+DOUYIN_AI_DECLARATION = "内容由AI生成"
+
 
 class SauError(RuntimeError):
     pass
@@ -207,11 +210,17 @@ class SauAdapter(PlatformAdapter):
             args += ["--schedule", opts.schedule]
         args += ["--headed"]   # 有头真实 Chrome，最隐蔽
 
+        # 抖音自主声明：默认选「内容由AI生成」（与B站AI声明一致），--no-ai-statement 则用 sau 默认
+        env_extra = {}
+        if self.name == "douyin" and getattr(opts, "ai_statement", True):
+            env_extra["SMU_DOUYIN_DECLARATION"] = DOUYIN_AI_DECLARATION
+            print(f"     🧾 自主声明将选「{DOUYIN_AI_DECLARATION}」")
+
         if opts.dry_run:
             print("  [dry-run] sau", " ".join(f"'{a}'" if (" " in a or "\n" in a) else a for a in args))
             return {"id": "(dry-run)", "title": meta["title"]}
 
-        proc = _run_sau(args)
+        proc = _run_sau(args, env_extra=env_extra)
         out = proc.stdout or ""
         for line in out.splitlines():
             print("   ", line.rstrip())
