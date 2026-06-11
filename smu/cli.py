@@ -35,23 +35,53 @@ DEFAULTS = {
     "ensure_tags": [],
 }
 
-# 视频之间的随机间隔默认区间（秒），按平台区分：
-#   B站走 API 上传，间隔可短；抖音/小红书是真实账号浏览器操作，间隔要大、要随机。
-_INTERVAL_DEFAULTS = {
-    "bilibili": (30, 90),
-    "_browser": (300, 720),   # 抖音/小红书/快手：5~12 分钟
+# 发布档位（借鉴 MatrixFlow 的激进/稳健/保守三档）：一档配一套随机间隔 + 每日上限。
+# 只作用于浏览器平台（抖音/小红书/视频号/快手）；B站走 API，单列更快的间隔。
+_PROFILES = {
+    "aggressive":   {"interval": (120, 300),  "daily_cap": 20},   # 激进：2~5 分钟，日上限 20
+    "steady":       {"interval": (300, 720),  "daily_cap": 10},   # 稳健（默认）：5~12 分钟，10
+    "conservative": {"interval": (600, 1200), "daily_cap": 5},    # 保守：10~20 分钟，5
 }
+_BILIBILI_INTERVAL = (30, 90)   # B站 API 上传，间隔可短
+
+
+def _profile(args) -> dict:
+    return _PROFILES.get(getattr(args, "profile", None) or "steady", _PROFILES["steady"])
 
 
 def resolve_interval(args) -> tuple[int, int]:
-    """返回 (最小秒, 最大秒)。命令行显式传了就用命令行，否则用平台默认。"""
+    """返回 (最小秒, 最大秒)。优先命令行 --min/--max，否则 B站用快档、其它用 profile 档位。"""
     lo = getattr(args, "min_interval", None)
     hi = getattr(args, "max_interval", None)
     if lo is None or hi is None:
-        d_lo, d_hi = _INTERVAL_DEFAULTS.get(args.platform, _INTERVAL_DEFAULTS["_browser"])
+        if args.platform == "bilibili":
+            d_lo, d_hi = _BILIBILI_INTERVAL
+        else:
+            d_lo, d_hi = _profile(args)["interval"]
         lo = d_lo if lo is None else lo
         hi = d_hi if hi is None else hi
     return (min(lo, hi), max(lo, hi))
+
+
+def published_today(state: dict, platform: str) -> int:
+    """统计今天（本地日期）该平台经 smu 发布的条数，用于每日上限。"""
+    from datetime import datetime, timezone
+    today = datetime.now().astimezone().date()
+    pub = platform_state(state, platform)["published"]
+    n = 0
+    for rec in pub.values():
+        if not isinstance(rec, dict) or rec.get("source") != "smu":
+            continue
+        at = rec.get("at") or rec.get("uploaded_at")
+        if not at:
+            continue
+        try:
+            d = datetime.fromisoformat(at.replace("Z", "+00:00")).astimezone().date()
+            if d == today:
+                n += 1
+        except ValueError:
+            continue
+    return n
 
 
 def fail(msg: str):
@@ -174,8 +204,22 @@ def cmd_upload(args) -> None:
         print("没有待投稿的素材")
         return
 
+    # ---- 每日上限（按 profile 档位）：浏览器平台防风控，B站 API 不限 ----
+    if args.platform != "bilibili" and not args.dry_run:
+        cap = _profile(args)["daily_cap"]
+        done_today = published_today(state, args.platform)
+        remaining = cap - done_today
+        if remaining <= 0:
+            fail(f"今日 {args.platform} 已发 {done_today} 条，达到「{args.profile or 'steady'}」档每日上限 {cap}。"
+                 f"明天再发，或换 --profile aggressive，或 --no-daily-cap 强制。")
+        if len(targets) > remaining and not args.no_daily_cap:
+            print(f"⚠️ 今日已发 {done_today} 条，「{args.profile or 'steady'}」档上限 {cap}，"
+                  f"本次只发前 {remaining} 条（剩余明天再发，或 --no-daily-cap 解除）")
+            targets = targets[:remaining]
+
     # ---- 上传前预检：逐素材展示将提交的内容，缺关键件默认拒绝 ----
-    print(f"预检 {len(targets)} 个素材 → {args.platform}"
+    prof = "" if args.platform == "bilibili" else f"，档位：{args.profile or 'steady'}"
+    print(f"预检 {len(targets)} 个素材 → {args.platform}{prof}"
           + ("（仅自己可见）" if args.private else "")
           + f"，标题前缀：{args.title_prefix}")
     incomplete: list[str] = []
@@ -290,6 +334,10 @@ def main() -> None:
     # 拟人化随机间隔（不传则按平台默认：B站30~90s，抖音/小红书300~720s）
     p.add_argument("--min-interval", type=int, default=None, help="视频间最小间隔秒数")
     p.add_argument("--max-interval", type=int, default=None, help="视频间最大间隔秒数")
+    # 发布档位（激进/稳健/保守）：一档配间隔 + 每日上限，仅作用于浏览器平台
+    p.add_argument("--profile", choices=["aggressive", "steady", "conservative"], default="steady",
+                   help="发布档位：aggressive(2~5分/日20) / steady(5~12分/日10,默认) / conservative(10~20分/日5)")
+    p.add_argument("--no-daily-cap", action="store_true", help="解除每日上限")
     p.add_argument("--dry-run", action="store_true", help="只打印命令不上传")
     p.set_defaults(func=cmd_upload)
 
