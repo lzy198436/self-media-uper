@@ -142,6 +142,29 @@ def cmd_status(args) -> None:
         print(f"下一个待投：{'%02d' % nxt.order if nxt.order is not None else ''} {nxt.name}")
 
 
+def cmd_stats(args) -> None:
+    from . import stats as S
+    if args.action == "pull":
+        try:
+            n = S.pull(args.platform, args.account)
+        except S.StatsError as e:
+            fail(str(e))
+        print(f"✅ {args.platform} 采集 {n} 条视频数据 → {S._store(args.platform)}")
+        return
+    # show
+    snap = S.latest_snapshot(args.platform)
+    if not snap:
+        print(f"{args.platform} 还没有数据，先跑：smu stats pull {args.platform}")
+        return
+    snap.sort(key=lambda r: r.get("play", 0), reverse=True)
+    tot = {k: sum(r.get(k, 0) for r in snap) for k in ("play", "like", "comment", "share", "collect")}
+    print(f"{args.platform} · 最近快照 {snap[0]['fetched_at'][:19]} · {len(snap)} 条视频")
+    print(f"合计：播放 {tot['play']} | 赞 {tot['like']} | 评论 {tot['comment']} | 分享 {tot['share']} | 收藏 {tot['collect']}")
+    print("播放 Top:")
+    for r in snap[:args.top]:
+        print(f"  {r.get('play', 0):>7} 播放 · {r.get('like', 0)}赞 · {r['title']}")
+
+
 def cmd_login(args) -> None:
     if getattr(args, "account", None):
         os.environ["SMU_ACCOUNT"] = args.account
@@ -305,6 +328,13 @@ def main() -> None:
     p = sub.add_parser("sync", help="拉取已发布稿件自动对账")
     add_common(p)
     p.set_defaults(func=cmd_sync)
+
+    p = sub.add_parser("stats", help="采集/查看已发视频数据（播放/赞/评论）")
+    p.add_argument("action", choices=["pull", "show"], help="pull=采集一次  show=看最近快照")
+    p.add_argument("--platform", default="douyin", help="平台（douyin/bilibili 已支持）")
+    p.add_argument("--account", default="main", help="账号标签")
+    p.add_argument("--top", type=int, default=10, help="show 时显示播放 Top N")
+    p.set_defaults(func=cmd_stats)
 
     p = sub.add_parser("mark", help="手动标记已投稿/取消标记")
     add_common(p)
