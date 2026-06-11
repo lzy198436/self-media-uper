@@ -71,19 +71,64 @@ def install() -> None:
 
     pa.Page.wait_for_timeout = humanized_wait
 
-    # ---- 补丁 4：抖音自主声明类型可配（默认 sau 写死「个人观点」）----
-    # 抖音发布必选「自主声明」，sau 默认选「内容为个人观点或见解」。
-    # 通过 SMU_DOUYIN_DECLARATION 改成「内容由AI生成」等（取值须与抖音弹窗选项完全一致）。
+    # ---- 补丁 4：抖音自主声明（健壮版，可配类型，默认 sau 写死「个人观点」）----
+    # 抖音发布必选「自主声明」。sau 原版点 .semi-radio 后直接点「确定」，但：
+    #   ① Semi 单选项点外层常选不中；② 抖音「确定」未选时是 CSS 置灰、并非真 disabled，
+    #   仍可点 → 弹窗关闭但声明没存上，sau 却记成功（实测草稿显示「请选择自主声明」）。
+    # 这里整体替换：点选后用 input.is_checked() 校验真的选中，再点「确定」，
+    # 关闭后还校验发布页那行已变成所选声明，否则如实报失败。
     decl = os.environ.get("SMU_DOUYIN_DECLARATION")
     if decl:
         try:
             from uploader.douyin_uploader.main import DouYinBaseUploader
-            orig_decl = DouYinBaseUploader.set_self_declaration
 
-            async def patched_decl(self, page, declaration=decl, _orig=orig_decl):
-                return await _orig(self, page, declaration)
+            async def robust_declaration(self, page, declaration=decl):
+                try:
+                    entry = page.get_by_text("请选择自主声明").first
+                    await entry.wait_for(state="visible", timeout=8000)
+                    await entry.click()
+                    dialog = page.locator(".semi-modal-content").filter(
+                        has_text="对作品内容添加声明").first
+                    await dialog.wait_for(state="visible", timeout=8000)
 
-            DouYinBaseUploader.set_self_declaration = patched_decl
+                    row = dialog.locator(".semi-radio").filter(has_text=declaration).first
+                    await row.wait_for(state="visible", timeout=6000)
+                    radio_input = row.locator("input").first
+
+                    checked = False
+                    for _ in range(4):
+                        try:
+                            checked = await radio_input.is_checked()
+                        except Exception:
+                            checked = False
+                        if checked:
+                            break
+                        # 轮流尝试几种点选方式
+                        for target in (row,
+                                       row.locator(".semi-radio-inner").first,
+                                       dialog.get_by_text(declaration, exact=True).first):
+                            try:
+                                await target.click(timeout=2500, force=True)
+                                if await radio_input.is_checked():
+                                    checked = True
+                                    break
+                            except Exception:
+                                continue
+                        if checked:
+                            break
+                    if not checked:
+                        raise RuntimeError(f"单选项未选中：{declaration}")
+
+                    ok = dialog.get_by_role("button", name="确定")
+                    await ok.click(timeout=6000)
+                    await dialog.wait_for(state="hidden", timeout=6000)
+                    # 校验发布页那行已变为所选声明（不再是占位「请选择自主声明」）
+                    await page.get_by_text(declaration, exact=True).first.wait_for(timeout=5000)
+                    print(f"[smu] 自主声明已选并校验「{declaration}」")
+                except Exception as exc:
+                    print(f"[smu] 自主声明设置失败：{exc}")
+
+            DouYinBaseUploader.set_self_declaration = robust_declaration
         except Exception:
             pass
 
