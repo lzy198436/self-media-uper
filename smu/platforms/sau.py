@@ -31,15 +31,20 @@ _RATIO_TOL = 0.12   # 比例匹配容差
 SAU_DIR = Path(os.environ.get("SMU_SAU_DIR") or SMU_HOME / "engines" / "social-auto-upload")
 PLAT_DIR = Path(__file__).resolve().parent          # 含 _sau_humanize.py
 
-# sau 子命令名（smu 平台名 → sau 平台名，当前一致）
-_SAU_PLATFORM = {"douyin": "douyin", "xiaohongshu": "xiaohongshu", "kuaishou": "kuaishou"}
+# sau 子命令名（smu 平台名 → sau 平台名）。视频号在 sau 里叫 tencent。
+_SAU_PLATFORM = {"douyin": "douyin", "xiaohongshu": "xiaohongshu",
+                 "kuaishou": "kuaishou", "shipinhao": "tencent"}
 
-TITLE_MAX = 30      # 抖音/小红书标题较短
+# 各平台标题长度上限
+_MAX_TITLE = {"douyin": 30, "xiaohongshu": 20, "kuaishou": 30, "shipinhao": 30}
+TITLE_MAX = 30
 
 # 各平台话题/标签数量上限（超限会导致 sau 卡在话题下拉框死循环）
 #   抖音：发布页最多 5 个话题（实测超过会卡住）
-#   小红书：话题上限较宽，给 10
-_MAX_TAGS = {"douyin": 5, "xiaohongshu": 10, "kuaishou": 5}
+_MAX_TAGS = {"douyin": 5, "xiaohongshu": 10, "kuaishou": 5, "shipinhao": 10}
+
+# 封面策略：dual=竖3:4+横4:3 双封面（抖音/视频号），single=单张3:4（小红书）
+_COVER_MODE = {"douyin": "dual", "xiaohongshu": "single", "kuaishou": "single", "shipinhao": "dual"}
 
 # 抖音自主声明类型（取值须与抖音发布页弹窗选项文字完全一致）
 DOUYIN_AI_DECLARATION = "内容由AI生成"
@@ -106,11 +111,13 @@ class SauAdapter(PlatformAdapter):
     # ---------- 文案/素材映射 ----------
 
     def build_meta(self, material: Material, opts) -> dict:
+        title_max = _MAX_TITLE.get(self.name, 30)
         copy_path = material.copies.get(self.name)
         if copy_path:
             m = parse_platform_copy(copy_path)
         else:
-            m = {"title": material.name[:TITLE_MAX], "desc": "", "tags": []}
+            m = {"title": material.name, "desc": "", "tags": []}
+        m["title"] = m["title"][:title_max]
         # 附加固定标签（话题等），文案自带的话题优先，固定标签补位
         tags = list(m["tags"])
         for t in getattr(opts, "ensure_tags", []):
@@ -166,13 +173,38 @@ class SauAdapter(PlatformAdapter):
             notes.append(f"竖封面 ✓ {portrait.name}（实测 {pr:.2f}≈0.75）")
         else:
             portrait = None
-            warnings.append("没有比例接近 3:4 的竖封面，竖封面不传（抖音会自动截帧）")
+            warnings.append("没有比例接近 3:4 的竖封面，竖封面不传（平台会自动截帧）")
         if landscape and ld <= _RATIO_TOL:
             notes.append(f"横封面 ✓ {landscape.name}（实测 {lr:.2f}≈1.33）")
         else:
             landscape = None
             warnings.append("没有比例接近 4:3 的横封面，横封面不传")
         return {"portrait": portrait, "landscape": landscape, "notes": notes, "warnings": warnings}
+
+    def _cover_args(self, material: Material) -> tuple[list[str], list[str], list[str]]:
+        """按平台返回封面命令参数 + 提示 + 警告。
+        single（小红书/快手）：单张 3:4 --thumbnail；dual（抖音/视频号）：竖3:4 + 横4:3。
+        抖音的 sau 标签页顺序与 UI 相反，用 _DOUYIN_COVER_SWAP 对调参数名。
+        """
+        c = self.detect_douyin_covers(material)        # {portrait(3:4), landscape(4:3), ...}
+        mode = _COVER_MODE.get(self.name, "single")
+        args: list[str] = []
+        notes = list(c["notes"])
+        warnings = list(c["warnings"])
+        if mode == "single":
+            if c["portrait"]:
+                args += ["--thumbnail", str(c["portrait"])]
+            warnings = [w for w in warnings if "横封面" not in w]   # 单封面不需要横封面
+            return args, notes, warnings
+        # dual
+        pslot, lslot = "--thumbnail-portrait", "--thumbnail-landscape"
+        if self.name == "douyin" and _DOUYIN_COVER_SWAP:
+            pslot, lslot = "--thumbnail-landscape", "--thumbnail-portrait"
+        if c["portrait"]:
+            args += [pslot, str(c["portrait"])]
+        if c["landscape"]:
+            args += [lslot, str(c["landscape"])]
+        return args, notes, warnings
 
     # ---------- 发布 ----------
 
@@ -193,20 +225,13 @@ class SauAdapter(PlatformAdapter):
             args += ["--desc", meta["desc"]]
         if meta["tags"]:
             args += ["--tags", ",".join(meta["tags"])]
-        # 抖音双封面：传图前先按真实比例检测，挑对了才传（不靠文件名，避免传错）。
-        covers = self.detect_douyin_covers(material)
-        for n in covers["notes"]:
+        # 封面：传图前按真实比例检测（不靠文件名），按平台出 single/dual 参数。
+        cover_args, cnotes, cwarn = self._cover_args(material)
+        for n in cnotes:
             print(f"     🔍 {n}")
-        for w in covers["warnings"]:
+        for w in cwarn:
             print(f"     ⚠️ {w}", file=sys.stderr)
-        # 抖音竖版槽 ← 3:4 竖封面，横版槽 ← 16:9 横封面。
-        # sau 的标签页顺序与抖音 UI 相反（见 _DOUYIN_COVER_SWAP），故按需对调参数名。
-        portrait_slot = "--thumbnail-landscape" if _DOUYIN_COVER_SWAP else "--thumbnail-portrait"
-        landscape_slot = "--thumbnail-portrait" if _DOUYIN_COVER_SWAP else "--thumbnail-landscape"
-        if covers["portrait"]:                       # 3:4 → 抖音竖版槽
-            args += [portrait_slot, str(covers["portrait"])]
-        if covers["landscape"]:                      # 16:9 → 抖音横版槽
-            args += [landscape_slot, str(covers["landscape"])]
+        args += cover_args
         if getattr(opts, "schedule", None):
             args += ["--schedule", opts.schedule]
         args += ["--headed"]   # 有头真实 Chrome，最隐蔽

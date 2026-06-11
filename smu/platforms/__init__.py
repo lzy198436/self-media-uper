@@ -1,7 +1,7 @@
 from .base import PlatformAdapter
 
-# sau 引擎覆盖的平台
-_SAU_PLATFORMS = {"douyin", "xiaohongshu", "kuaishou"}
+# sau 引擎覆盖的平台（shipinhao=视频号，sau 里叫 tencent）
+_SAU_PLATFORMS = {"douyin", "xiaohongshu", "kuaishou", "shipinhao"}
 
 
 def get_platform(name: str) -> PlatformAdapter:
@@ -12,5 +12,5 @@ def get_platform(name: str) -> PlatformAdapter:
         from .sau import SauAdapter
         return SauAdapter(name)
     raise KeyError(
-        f"未支持的平台：{name}（已支持：bilibili / douyin / xiaohongshu / kuaishou；"
-        f"视频号/微博在路线图上）")
+        f"未支持的平台：{name}（已支持：bilibili / douyin / xiaohongshu / kuaishou / shipinhao；"
+        f"微博在路线图上）")
