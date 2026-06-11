@@ -234,6 +234,9 @@ class SauAdapter(PlatformAdapter):
         args += cover_args
         if getattr(opts, "schedule", None):
             args += ["--schedule", opts.schedule]
+        # 视频号原创类型（可选；sau 默认会声明原创，category 决定原创类型下拉）
+        if self.name == "shipinhao" and getattr(opts, "category", None):
+            args += ["--category", opts.category]
         args += ["--headed"]   # 有头真实 Chrome，最隐蔽
 
         # 抖音自主声明：默认选「内容由AI生成」（与B站AI声明一致），--no-ai-statement 则用 sau 默认

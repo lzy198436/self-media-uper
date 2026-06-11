@@ -361,6 +361,7 @@ def main() -> None:
     # 抖音/小红书等浏览器平台
     p.add_argument("--account", default="main", help="账号标签（抖音/小红书多账号区分），默认 main")
     p.add_argument("--schedule", help="抖音/小红书定时发布：格式 'YYYY-MM-DD HH:MM'")
+    p.add_argument("--category", help="视频号原创声明的原创类型（如 知识/教育），可选")
     # 拟人化随机间隔（不传则按平台默认：B站30~90s，抖音/小红书300~720s）
     p.add_argument("--min-interval", type=int, default=None, help="视频间最小间隔秒数")
     p.add_argument("--max-interval", type=int, default=None, help="视频间最大间隔秒数")
