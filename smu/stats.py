@@ -27,9 +27,9 @@ SAU_COOKIES = SMU_HOME / "engines" / "social-auto-upload" / "cookies"
 BILI_COOKIE = SMU_HOME / "bilibili.cookies.json"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/125 Safari/537.36"
 
-# 待接入平台的创作中心数据页（后续同小红书思路：patchright 拦截已签名响应）
-_TODO_URLS = {
-    "shipinhao": "https://channels.weixin.qq.com/platform/dataCenter",
+# 待接入平台的创作中心数据页（后续同小红书/视频号思路：patchright 拦截已签名响应）
+_TODO_URLS: dict[str, str] = {
+    # kuaishou 等
 }
 
 
@@ -121,29 +121,38 @@ def _pull_bilibili(account: str = "") -> list[dict]:
     return out
 
 
-def _pull_xiaohongshu(account: str) -> list[dict]:
-    """小红书：跑 patchright 拦截 note/user/posted（免签名）。需 sau venv + 登录。"""
-    cookie = SAU_COOKIES / f"xiaohongshu_{account}.json"
+def _pull_browser_intercept(platform: str, sau_platform: str, account: str, script_name: str) -> list[dict]:
+    """小红书/视频号通用：跑 patchright 采集脚本拦截已签名响应（免签名）。"""
+    cookie = SAU_COOKIES / f"{sau_platform}_{account}.json"
     if not cookie.is_file():
-        raise StatsError(f"小红书账号「{account}」未登录：{cookie} 不存在")
+        raise StatsError(f"{platform} 账号「{account}」未登录：{cookie} 不存在")
     sau_py = SMU_HOME / "engines" / "social-auto-upload" / ".venv" / "bin" / "python"
     if not sau_py.is_file():
-        raise StatsError(f"找不到 sau venv：{sau_py}（小红书采集需要 patchright）")
-    script = Path(__file__).resolve().parent / "_xhs_collect.py"
+        raise StatsError(f"找不到 sau venv：{sau_py}（{platform} 采集需要 patchright）")
+    script = Path(__file__).resolve().parent / script_name
     proc = subprocess.run([str(sau_py), str(script), str(cookie)],
                           capture_output=True, text=True, timeout=180)
-    line = (proc.stdout or "").strip().splitlines()[-1] if proc.stdout.strip() else ""
+    lines = (proc.stdout or "").strip().splitlines()
+    line = lines[-1] if lines else ""
     try:
         data = json.loads(line)
     except Exception:
-        raise StatsError(f"小红书采集输出解析失败：{proc.stdout[-200:]}{proc.stderr[-200:]}")
+        raise StatsError(f"{platform} 采集输出解析失败：{proc.stdout[-200:]}{proc.stderr[-200:]}")
     if "error" in data:
-        raise StatsError(f"小红书采集失败：{data['error']}")
+        raise StatsError(f"{platform} 采集失败：{data['error']}")
     return data.get("notes", [])
 
 
+def _pull_xiaohongshu(account: str) -> list[dict]:
+    return _pull_browser_intercept("xiaohongshu", "xiaohongshu", account, "_xhs_collect.py")
+
+
+def _pull_shipinhao(account: str) -> list[dict]:
+    return _pull_browser_intercept("shipinhao", "tencent", account, "_channels_collect.py")
+
+
 _COLLECTORS = {"douyin": _pull_douyin, "bilibili": _pull_bilibili,
-               "xiaohongshu": _pull_xiaohongshu}
+               "xiaohongshu": _pull_xiaohongshu, "shipinhao": _pull_shipinhao}
 
 
 # ---------- 存储 ----------

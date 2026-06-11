@@ -15,7 +15,7 @@
 | **B站** | biliup（Web v3 API） | ✅ | 16:9 + 4:3 双封面 | 含AI生成内容 | ✅ | ✅ cookie 直拉 |
 | **抖音** | social-auto-upload（patchright） | ✅ | 竖3:4 + 横4:3 双封面 | 内容由AI生成（校验生效） | ✅ | ✅ cookie 直拉 |
 | **小红书** | social-auto-upload | ✅ | 单封面 3:4 | 原创（自动） | ✅ | ✅ 浏览器拦截 |
-| **视频号** | social-auto-upload（tencent） | ✅ | 竖3:4 + 横4:3 | 声明原创（自动）+短标题 | ✅ | 🚧 待接入 |
+| **视频号** | social-auto-upload（tencent） | ✅ | 竖3:4 + 横4:3 | 声明原创（自动）+短标题 | ✅ | ✅ 浏览器拦截 |
 | **快手** | social-auto-upload | ✅ | 单封面 3:4 | — | ✅ | 🚧 待接入 |
 
 > 所有平台都藏在 `platforms/` 适配器后面，`smu` 一套命令通吃，引擎可换。
@@ -104,6 +104,7 @@ smu upload <目录> 11-20
 | 抖音 | cookie GET `creator.douyin.com/.../aweme/post/` → 每条 statistics | 快、无头 |
 | B站 | cookie GET `member.bilibili.com/x/web/archives` → 每稿 stat | 快、无头 |
 | 小红书 | patchright 打开创作中心，拦截页面**自己发的已签名响应**（免写 x-s 签名） | 有头、会弹窗 |
+| 视频号 | patchright 打开助手数据中心，拦截 `post/post_list` 响应 | 有头、会弹窗 |
 
 ```bash
 smu stats pull --platform douyin --account main   # 采集一次（建议每天定时跑，攒成时间序列）
