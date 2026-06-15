@@ -62,19 +62,38 @@ def _sau_python() -> str:
 
 
 def _run_sau(sau_args: list[str], *, interactive: bool = False, env_extra: dict | None = None) -> subprocess.CompletedProcess | int:
-    """用 sau venv + 拟人化补丁运行 sau_cli。interactive=True 直通终端（登录扫码用）。"""
+    """用 sau venv + 拟人化补丁运行 sau_cli。interactive=True 直通终端（登录扫码用）。
+
+    非交互模式下「实时流式透传」子进程输出——边收边打印边累积，而不是等进程结束才
+    一次性吐出。否则上层（Hermes）整个上传过程（cookie/上传/活动/封面/发布，约 47s）
+    都看不到进度、只能盲猜。返回 CompletedProcess（stdout=完整输出）保持调用方兼容。
+    """
     bootstrap = (
         f"import sys; sys.path.insert(0, {str(PLAT_DIR)!r}); "
         "import _sau_humanize; import runpy; "
         "sys.argv = ['sau'] + sys.argv[1:]; "
         "runpy.run_module('sau_cli', run_name='__main__')"
     )
-    cmd = [_sau_python(), "-c", bootstrap, *sau_args]
-    env = {**os.environ, **(env_extra or {})}
+    # -u 强制子进程 stdout/stderr 无缓冲；PYTHONUNBUFFERED 双保险——否则管道下 Python
+    # 默认全缓冲，loguru/print 的行会攒到进程结束才 flush，上层实时看不到。
+    cmd = [_sau_python(), "-u", "-c", bootstrap, *sau_args]
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", **(env_extra or {})}
     if interactive:
         return subprocess.call(cmd, cwd=str(SAU_DIR), env=env)
-    return subprocess.run(cmd, cwd=str(SAU_DIR), env=env, text=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    proc = subprocess.Popen(
+        cmd, cwd=str(SAU_DIR), env=env, text=True, bufsize=1,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    lines: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:  # 逐行实时读取
+        sys.stdout.write(line)   # 立刻透传给上层（实时可见）
+        sys.stdout.flush()
+        lines.append(line)
+    proc.wait()
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout="".join(lines), stderr="")
+
 
 
 def parse_platform_copy(path: Path) -> dict:
@@ -251,8 +270,7 @@ class SauAdapter(PlatformAdapter):
 
         proc = _run_sau(args, env_extra=env_extra)
         out = proc.stdout or ""
-        for line in out.splitlines():
-            print("   ", line.rstrip())
+        # 输出已在 _run_sau 里实时透传过了，这里不再重复打印，只用 out 判断结果
         ok = proc.returncode == 0 and ("发布成功" in out or "submitted" in out or "upload submitted" in out.lower())
         if not ok:
             raise SauError(f"sau 退出码 {proc.returncode}")
