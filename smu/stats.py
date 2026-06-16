@@ -155,6 +155,14 @@ _COLLECTORS = {"douyin": _pull_douyin, "bilibili": _pull_bilibili,
                "xiaohongshu": _pull_xiaohongshu, "shipinhao": _pull_shipinhao}
 
 
+def fetch(platform: str, account: str = "main") -> list[dict]:
+    """实时采集一次该平台已发视频列表（不落盘），返回 [{title, video_id, ...}]。
+    供 pre-publish verify 用：发布前去平台搜标题查重。"""
+    if platform not in _COLLECTORS:
+        raise StatsError(f"{platform} 不支持实时采集（verify 查重需要）")
+    return _COLLECTORS[platform](account)
+
+
 # ---------- 存储 ----------
 
 def _store(platform: str) -> Path:

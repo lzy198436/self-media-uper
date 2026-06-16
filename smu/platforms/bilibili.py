@@ -182,20 +182,29 @@ class BilibiliAdapter(PlatformAdapter):
             print("   ", line.rstrip())
         proc.wait()
         out = "".join(captured)
-        if proc.returncode != 0 or "投稿成功" not in out:
-            raise BilibiliError(f"biliup 退出码 {proc.returncode}")
+        # 成败判定以「是否拿到 BV 号」为准，而非退出码/「投稿成功」字样。
+        # 根因：biliup 提交成功（B站已收稿、回了 BV）时仍可能返回 code 601 限流警告，
+        # 旧逻辑把 601 当硬错误 → 退出码非0 → state 没存 → 下次重跑又投一遍（31-34 重复事件）。
+        # 只要输出里有 BV，就说明 B站已收稿，记成功。
         m = re.search(r"(BV[0-9A-Za-z]{10})", out)
+        rate_limited = "601" in out or "请求过于频繁" in out or "频繁" in out
+        if not m:
+            # 没拿到 BV 才是真失败
+            raise BilibiliError(f"biliup 未返回 BV（退出码 {proc.returncode}）"
+                                + ("：触发限流(601)，稍后重试" if rate_limited else ""))
+        if rate_limited:
+            print("    ⚠️ biliup 返回 601 限流警告，但已拿到 BV，判为提交成功（B站已收稿）", file=sys.stderr)
         return {
-            "bvid": m.group(1) if m else "",
+            "bvid": m.group(1),
             "title": meta["title"],
             "private": bool(getattr(opts, "private", False)),
+            "rate_limited": rate_limited,
             "at": datetime.now(timezone.utc).isoformat(),
         }
 
     # ---------- 对账 ----------
 
-    def sync(self, materials: list[Material], state: dict) -> list[tuple[str, str]]:
-        """拉取已发布稿件，按「标题以素材文件夹名结尾」匹配并标记。"""
+    def _fetch_archives(self) -> list[dict]:
         archives: list[dict] = []
         for pn in range(1, 40):
             data = self._member_api(
@@ -204,6 +213,16 @@ class BilibiliAdapter(PlatformAdapter):
             archives.extend(a["Archive"] for a in batch)
             if len(batch) < 50:
                 break
+        return archives
+
+    def list_published(self, opts) -> list[dict]:
+        """实时拉 B站已投稿件，供 pre-publish verify 查重。"""
+        return [{"title": ar.get("title", ""), "id": ar.get("bvid", "")}
+                for ar in self._fetch_archives()]
+
+    def sync(self, materials: list[Material], state: dict) -> list[tuple[str, str]]:
+        """拉取已发布稿件，按「标题以素材文件夹名结尾」匹配并标记。"""
+        archives = self._fetch_archives()
         pstate = platform_state(state, self.name)
         matched: list[tuple[str, str]] = []
         for mat in materials:

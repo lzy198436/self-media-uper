@@ -10,9 +10,7 @@
 """
 
 import json
-import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 try:
@@ -30,7 +28,6 @@ def main() -> None:
     if not cookie_path.is_file():
         print(json.dumps({"error": f"cookie 不存在: {cookie_path}"}))
         return
-    cookies = json.loads(cookie_path.read_text(encoding="utf-8")).get("cookies", [])
 
     by_id: dict[str, dict] = {}
 
@@ -45,21 +42,30 @@ def main() -> None:
         except Exception:
             pass
 
-    user_dir = tempfile.mkdtemp(prefix="smu_ch_")
+    # 视频号会话主要在 localStorage：必须用 new_context(storage_state=完整json) 恢复，
+    # 而非只 add_cookies(只灌 cookie=登出态，post_list 抓不到)。普通独立浏览器即可，
+    # 不用持久化 profile(实测会有同目录并发 launch 崩溃，且非必要)。
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(
-            user_data_dir=user_dir, headless=False, channel="chrome")
+        browser = p.chromium.launch(headless=False, channel="chrome")
+        ctx = browser.new_context(storage_state=str(cookie_path))
         try:
-            ctx.add_cookies(cookies)
             page = ctx.new_page()
             page.on("response", on_response)
             page.goto(DATA_CENTER, wait_until="networkidle", timeout=45000)
             page.wait_for_timeout(7000)
+            # 翻页：滚到底触发 post_list 续拉。旧版只滚 8 轮、数量稳定 1 轮就停 →
+            # 漏抓（实测 11 条只拿到 5）。改成最多 25 轮、连续 3 轮无新增才停，宁慢勿漏。
             last = -1
-            for _ in range(8):
-                if by_id and len(by_id) == last:
-                    break
-                last = len(by_id)
+            stable = 0
+            for _ in range(25):
+                cur = len(by_id)
+                if cur == last:
+                    stable += 1
+                    if cur > 0 and stable >= 3:
+                        break
+                else:
+                    stable = 0
+                last = cur
                 try:
                     page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
                 except Exception:
@@ -68,7 +74,7 @@ def main() -> None:
             print(f"[channels] 拦截到 {len(by_id)} 条 | url={page.url}", file=sys.stderr)
         finally:
             ctx.close()
-            shutil.rmtree(user_dir, ignore_errors=True)
+            browser.close()
 
     notes = []
     for n in by_id.values():

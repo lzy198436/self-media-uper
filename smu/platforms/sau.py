@@ -115,17 +115,32 @@ class SauAdapter(PlatformAdapter):
     def _account(self, opts) -> str:
         return getattr(opts, "account", None) or "main"
 
+    def _platform_env(self, account: str) -> dict:
+        """注入给 sau 子进程的平台感知环境变量，驱动 _sau_humanize 的平台专属补丁。
+        - SMU_PLATFORM：所有平台都设(小红书去stealth/半自动、视频号 storage_state 存全 据此分流)
+        """
+        return {"SMU_PLATFORM": self.name}
+
     # ---------- 登录 ----------
 
     def login(self) -> None:
         acct = os.environ.get("SMU_ACCOUNT", "main")
         print(f"登录 {self.name}（扫码），账号标签：{acct}")
-        rc = _run_sau([self.sau_platform, "login", "--account", acct, "--headed"], interactive=True)
+        rc = _run_sau([self.sau_platform, "login", "--account", acct, "--headed"],
+                      interactive=True, env_extra=self._platform_env(acct))
         sys.exit(rc)
 
     def is_logged_in(self, account: str = "main") -> bool:
         ck = SAU_DIR / "cookies" / f"{self.sau_platform}_{account}.json"
         return ck.is_file()
+
+    def list_published(self, opts) -> list[dict]:
+        """实时采集平台已发视频列表，供 pre-publish verify 查重。
+        复用 stats 的采集器（抖音 API / 小红书·视频号 patchright 拦截）。"""
+        from .. import stats as S
+        acct = self._account(opts)
+        rows = S.fetch(self.name, acct)
+        return [{"title": r.get("title", ""), "id": r.get("video_id", "")} for r in rows]
 
     # ---------- 文案/素材映射 ----------
 
@@ -259,7 +274,7 @@ class SauAdapter(PlatformAdapter):
         args += ["--headed"]   # 有头真实 Chrome，最隐蔽
 
         # 抖音自主声明：默认选「内容由AI生成」（与B站AI声明一致），--no-ai-statement 则用 sau 默认
-        env_extra = {}
+        env_extra = dict(self._platform_env(acct))
         if self.name == "douyin" and getattr(opts, "ai_statement", True):
             env_extra["SMU_DOUYIN_DECLARATION"] = DOUYIN_AI_DECLARATION
             print(f"     🧾 自主声明将选「{DOUYIN_AI_DECLARATION}」")
@@ -268,12 +283,20 @@ class SauAdapter(PlatformAdapter):
             print("  [dry-run] sau", " ".join(f"'{a}'" if (" " in a or "\n" in a) else a for a in args))
             return {"id": "(dry-run)", "title": meta["title"]}
 
-        proc = _run_sau(args, env_extra=env_extra)
-        out = proc.stdout or ""
-        # 输出已在 _run_sau 里实时透传过了，这里不再重复打印，只用 out 判断结果
-        ok = proc.returncode == 0 and ("发布成功" in out or "submitted" in out or "upload submitted" in out.lower())
-        if not ok:
-            raise SauError(f"sau 退出码 {proc.returncode}")
+        # 小红书走半自动：发布按钮交人手点，需直通终端读键盘(interactive)。
+        # 成败以 sau 退出码为准(半自动补丁里发布失败会抛错 → 退出码非0)。
+        if self.name == "xiaohongshu":
+            print("     🖐 小红书半自动：内容自动填好后，请在浏览器手动点发布并回到终端按回车")
+            rc = _run_sau(args, interactive=True, env_extra=env_extra)
+            if rc != 0:
+                raise SauError(f"小红书半自动未成功（sau 退出码 {rc}）")
+        else:
+            proc = _run_sau(args, env_extra=env_extra)
+            out = proc.stdout or ""
+            # 输出已在 _run_sau 里实时透传过了，这里不再重复打印，只用 out 判断结果
+            ok = proc.returncode == 0 and ("发布成功" in out or "submitted" in out or "upload submitted" in out.lower())
+            if not ok:
+                raise SauError(f"sau 退出码 {proc.returncode}")
         return {
             "id": "",            # sau 不回 aweme_id，留空
             "title": meta["title"],

@@ -24,3 +24,8 @@ class PlatformAdapter(ABC):
     def sync(self, materials: list[Material], state: dict) -> list[tuple[str, str]]:
         """从平台拉取已发布内容并与素材匹配，返回 [(素材名, 平台id)]。可选实现。"""
         raise NotImplementedError(f"{self.name} 暂不支持 sync")
+
+    def list_published(self, opts) -> list[dict]:
+        """实时拉取平台上已发布视频列表，返回 [{title, id}]。
+        供 pre-publish verify 发布前查重用。可选实现。"""
+        raise NotImplementedError(f"{self.name} 暂不支持 list_published（verify 查重）")

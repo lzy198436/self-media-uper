@@ -90,6 +90,22 @@ def fail(msg: str):
     sys.exit(1)
 
 
+def _norm_title(s: str) -> str:
+    """归一化标题用于查重匹配：去掉开头序号前缀(如 01_)，再去空白与常见标点。"""
+    import re as _re
+    s = _re.sub(r"^\s*\d+[_\-]\s*", "", s or "")   # 素材名的 NN_ 前缀平台标题没有
+    return _re.sub(r"[\s#【】\[\]()（）!！?？、,，.。:：~\-—_|]+", "", s)
+
+
+def title_matches(name: str, title: str) -> bool:
+    """素材名与平台标题是否指同一条：归一化后任一为另一方子串（容忍前缀钩子/截断），
+    带最小长度护栏防误判。"""
+    n, t = _norm_title(name), _norm_title(title)
+    if len(n) < 4 or len(t) < 4:
+        return n == t and bool(n)
+    return n in t or t in n
+
+
 def dir_config(root: Path) -> dict:
     cfg = dict(DEFAULTS)
     f = root / "smu.json"
@@ -136,7 +152,20 @@ def cmd_status(args) -> None:
     published = platform_state(state, args.platform)["published"]
     done = [m for m in mats if m.name in published]
     pending = [m for m in mats if m.name not in published]
-    print(f"素材 {len(mats)} 个 | 已投稿 {len(done)} | 待投稿 {len(pending)}")
+    # 两个口径分开报，根治「state 17 vs status 15」的困惑：
+    #   命中 = 本目录素材里已投稿的（status 关心的）
+    #   记录 = state.published 总条数（可能 > 命中：含孤儿——曾投但目录里已无对应素材）
+    mat_names = {m.name for m in mats}
+    orphans = [name for name in published if name not in mat_names]
+    print(f"素材 {len(mats)} 个 | 本目录命中已投稿 {len(done)} | 待投稿 {len(pending)}")
+    print(f"state 记录 {len(published)} 条（命中 {len(done)} + 孤儿 {len(orphans)}）")
+    if orphans:
+        print(f"⚠️ {len(orphans)} 条孤儿记录（state 有、本目录无对应素材，不计入待投/命中）：")
+        for name in orphans:
+            rec = published[name]
+            src = rec.get("source", "?") if isinstance(rec, dict) else "?"
+            vid = (rec.get("bvid") or rec.get("id") or "") if isinstance(rec, dict) else ""
+            print(f"     · {name}  [{src}]  {vid}")
     if pending:
         nxt = pending[0]
         print(f"下一个待投：{'%02d' % nxt.order if nxt.order is not None else ''} {nxt.name}")
@@ -268,6 +297,39 @@ def cmd_upload(args) -> None:
              f"  缺件素材：{' '.join(incomplete)}\n"
              f"  补齐素材后重试，或确认接受降级（无封面=B站截帧、无文案=空简介）再加 --allow-incomplete。")
     targets = [m for m in targets if m.video]
+
+    # ---- pre-publish verify：发布前去平台搜标题查重（治本，防 state 漂移导致的重复发）----
+    # 一次性拉平台已发列表（浏览器拦截类太重，不逐条查），命中的跳过并回写 state。
+    if not args.dry_run and not getattr(args, "no_verify", False) and targets:
+        try:
+            remote = platform.list_published(args)
+        except NotImplementedError:
+            remote = None
+            print(f"     ℹ️ {args.platform} 暂不支持发布前查重，跳过（仍按本地 state 判重）")
+        except Exception as e:
+            remote = None
+            print(f"     ⚠️ 发布前查重失败（按未发处理，继续）：{e}", file=sys.stderr)
+        if remote is not None:
+            print(f"🔎 发布前查重：平台已有 {len(remote)} 条，比对 {len(targets)} 个待投…")
+            survivors = []
+            for m in targets:
+                hit = next((r for r in remote if title_matches(m.name, r.get("title", ""))), None)
+                if hit:
+                    print(f"     ⏭️ 跳过 {m.name}：平台已存在「{hit.get('title', '')[:30]}」{hit.get('id', '')}")
+                    published[m.name] = {
+                        "id": hit.get("id", ""), "title": hit.get("title", ""),
+                        "source": "verify", "at": datetime.now(timezone.utc).isoformat()}
+                    save_state(state)
+                else:
+                    survivors.append(m)
+            skipped = len(targets) - len(survivors)
+            if skipped:
+                print(f"     查重命中 {skipped} 条已存在，本次实发 {len(survivors)} 条")
+            targets = survivors
+    if not targets:
+        print("查重后没有待投稿的素材（平台已全部存在）")
+        return
+
     failed = []
     for i, mat in enumerate(targets):
         print(f"\n[{i + 1}/{len(targets)}] {mat.name}")
@@ -369,6 +431,8 @@ def main() -> None:
     p.add_argument("--profile", choices=["aggressive", "steady", "conservative"], default="steady",
                    help="发布档位：aggressive(2~5分/日20) / steady(5~12分/日10,默认) / conservative(10~20分/日5)")
     p.add_argument("--no-daily-cap", action="store_true", help="解除每日上限")
+    p.add_argument("--no-verify", action="store_true",
+                   help="跳过发布前去平台查重（默认会查重，命中则跳过避免重复发）")
     p.add_argument("--dry-run", action="store_true", help="只打印命令不上传")
     p.set_defaults(func=cmd_upload)
 

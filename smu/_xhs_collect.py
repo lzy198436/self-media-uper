@@ -59,12 +59,18 @@ def main() -> None:
             page.on("response", on_response)
             page.goto(NOTE_MANAGER, wait_until="networkidle", timeout=45000)
             page.wait_for_timeout(7000)         # 首屏 note/user/posted 较慢
-            # 温和滚动触发翻页；数量稳定且 >0 即停
+            # 温和滚动触发翻页；旧版数量稳定 1 轮就停易漏抓，改成连续 3 轮无新增才停
             last = -1
-            for _ in range(8):
-                if by_id and len(by_id) == last:
-                    break
-                last = len(by_id)
+            stable = 0
+            for _ in range(25):
+                cur = len(by_id)
+                if cur == last:
+                    stable += 1
+                    if cur > 0 and stable >= 3:
+                        break
+                else:
+                    stable = 0
+                last = cur
                 try:
                     page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
                 except Exception:

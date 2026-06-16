@@ -32,6 +32,105 @@ def _envf(name: str, default: float) -> float:
         return default
 
 
+def _install_tencent_storage_state(pa) -> None:
+    """补丁 7：视频号 storage_state 保存时带上 indexed_db，避免会话信息漏存。
+
+    实测视频号登录态主要在 localStorage(storage_state 默认就存)，少数情况设备令牌在
+    IndexedDB。引擎原生 storage_state(path=...) 不带 indexed_db → 万一令牌在 IDB 会漏。
+    这里让视频号进程的 storage_state 默认带 indexed_db=True，存全。恢复(new_context)时
+    Playwright 见到文件里有 indexedDB 字段会自动灌回，无需改 new_context。
+
+    注意：不再用持久化 profile —— 实测普通独立浏览器 + new_context(storage_state) 就能
+    完整恢复会话，且没有「同 profile 目录并发 launch」的崩溃问题。
+    """
+    if os.environ.get("SMU_PLATFORM") != "shipinhao":
+        return
+    orig_ss = pa.BrowserContext.storage_state
+
+    async def ss_with_idb(self, *args, **kwargs):
+        kwargs.setdefault("indexed_db", True)
+        return await orig_ss(self, *args, **kwargs)
+
+    pa.BrowserContext.storage_state = ss_with_idb
+
+
+def _install_xhs_semi_auto(pa) -> None:
+    """补丁 6：小红书「半自动」——填好全部内容后停在发布按钮前，交人手点。
+
+    小红书风控盯的是「行为模式」(只发不逛、精确守时)，不是浏览器指纹。所以全自动
+    点发布最易触发「疑似脚本运营」预警。半自动：脚本把视频/标题/正文/话题/封面全
+    准备好，最后一步发布留给真人——你顺手刷两下、亲手点发布，最像真人。
+
+    仅当 SMU_PLATFORM=xiaohongshu 且即时发布(非定时)时生效。需在真终端运行(能读
+    键盘)；非交互环境(cron)下如实抛错，绝不假装成功。
+    """
+    if os.environ.get("SMU_PLATFORM") != "xiaohongshu":
+        return
+    try:
+        from uploader.xiaohongshu_uploader.main import (
+            XiaoHongShuVideo, xiaohongshu_logger,
+            XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED, XHS_PUBLISH_VIDEO_URL,
+        )
+    except Exception:
+        return
+
+    orig_upload_content = XiaoHongShuVideo.upload_video_content
+
+    async def semi_auto_upload_content(self, page):
+        import asyncio
+        # 定时发布走原逻辑(无需真人在场)；只半自动化「即时发布」
+        if getattr(self, "publish_strategy", None) == XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED:
+            return await orig_upload_content(self, page)
+
+        xiaohongshu_logger.info("🧍 [半自动] 上传视频 + 填好标题/正文/话题/封面，发布留给你手点")
+        await page.goto(XHS_PUBLISH_VIDEO_URL)
+        await page.wait_for_url(XHS_PUBLISH_VIDEO_URL)
+        await page.locator("div[class^='upload-content'] input[class='upload-input']").set_input_files(self.file_path)
+
+        # 等视频上传完(标题框出现即可编辑)
+        for _ in range(120):
+            title_box = page.locator('input[placeholder*="填写标题"]')
+            if await title_box.count() and await title_box.is_visible():
+                break
+            await asyncio.sleep(2)
+        xiaohongshu_logger.success("🥳 [半自动] 视频已传完，开始填内容")
+
+        await self.fill_meta(page)
+        await self.set_thumbnail(page, self.thumbnail_path)
+        await self.check_original_declaration(page)
+
+        # —— 停在发布按钮前，交人手点 ——
+        if not sys.stdin or not sys.stdin.isatty():
+            raise RuntimeError(
+                "小红书半自动需要真终端手动点发布。当前不是交互终端(疑似 cron)，"
+                "已中止——请在终端手动运行 smu upload 发小红书，别用定时任务。")
+        print("\n" + "=" * 56, file=sys.stderr)
+        print("🖐  小红书半自动：内容已填好，请在浏览器里——", file=sys.stderr)
+        print("    1) 随手刷两下信息流/看下通知(降低脚本特征)", file=sys.stderr)
+        print("    2) 检查标题/正文/封面无误", file=sys.stderr)
+        print("    3) 亲手点「发布」按钮", file=sys.stderr)
+        print("    完成后回到这里按【回车】，我来核对结果并收尾。", file=sys.stderr)
+        print("=" * 56, file=sys.stderr)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, sys.stdin.readline)
+
+        # 核对是否真发布成功：跳到 publish/success 或发布页已消失才算数
+        for _ in range(10):
+            if "publish/success" in page.url:
+                xiaohongshu_logger.success("🥳 [半自动] 检测到发布成功页")
+                return
+            await asyncio.sleep(1)
+        # 没跳成功页：再给一次机会
+        print("⚠️ 还没检测到发布成功页。若已发布请忽略；否则点完发布再按回车。", file=sys.stderr)
+        await loop.run_in_executor(None, sys.stdin.readline)
+        if "publish/success" in page.url or "/publish/publish" not in page.url:
+            xiaohongshu_logger.success("🥳 [半自动] 已离开发布页，按成功处理")
+            return
+        raise RuntimeError("小红书半自动：仍停留在发布页，未检测到发布成功，按失败处理")
+
+    XiaoHongShuVideo.upload_video_content = semi_auto_upload_content
+
+
 def install() -> None:
     if os.environ.get("SMU_HUMANIZE", "1") == "0":
         return
@@ -144,6 +243,27 @@ def install() -> None:
             return await orig_press(self, key, *args, **kwargs)
 
         pa.Keyboard.press = mac_press
+
+    # ---- 补丁 5：小红书跳过 stealth.min.js 注入 ----
+    # sau 给每个 context 注入 2024 版 puppeteer-extra stealth.min.js，但它和 Patchright
+    # 自带的 CDP 层反检测「互相拆台」：add_init_script 的注入方式本身会重新引入可检测痕迹，
+    # 且这套老 stealth 的特征早被小红书风控指纹化 → 注入比不注入更易被标。
+    # 只对小红书跳过（SMU_PLATFORM=xiaohongshu），抖音/视频号维持原状不动。
+    if os.environ.get("SMU_PLATFORM") == "xiaohongshu":
+        orig_add_init = pa.BrowserContext.add_init_script
+
+        async def skip_stealth_init(self, script=None, *, path=None, **kwargs):
+            p = str(path or "")
+            if "stealth" in p.lower():
+                print("[smu] 小红书：跳过 stealth.min.js 注入（与 Patchright 反检测冲突）")
+                return None
+            return await orig_add_init(self, script, path=path, **kwargs)
+
+        pa.BrowserContext.add_init_script = skip_stealth_init
+
+    # ---- 补丁 6 + 7 见下（小红书半自动 / 视频号 storage_state 存全）----
+    _install_xhs_semi_auto(pa)
+    _install_tencent_storage_state(pa)
 
 
 install()
