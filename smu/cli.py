@@ -257,7 +257,11 @@ def cmd_mark(args) -> None:
 def cmd_upload(args) -> None:
     apply_dir_config(args)
     mats = M.scan(args.dir)
-    platform = get_platform(args.platform)
+    # 小红书视频默认走扩展(日常浏览器，风控低)；--engine sau 一键回退到 patchright。
+    engine = getattr(args, "engine", None)
+    if engine is None:
+        engine = "extension" if args.platform == "xiaohongshu" else "sau"
+    platform = get_platform(args.platform, engine)
     state = load_state()
     published = platform_state(state, args.platform)["published"]
 
@@ -518,6 +522,9 @@ def main() -> None:
     p.add_argument("--line", help="B站上传线路 bda2/ws/qn 等")
     # 抖音/小红书等浏览器平台
     p.add_argument("--account", default="main", help="账号标签（抖音/小红书多账号区分），默认 main")
+    p.add_argument("--engine", choices=["sau", "extension"], default=None,
+                   help="发布引擎：sau(patchright新浏览器) / extension(日常浏览器扩展，风控低)。"
+                        "小红书默认 extension，其它默认 sau")
     p.add_argument("--schedule", help="抖音/小红书定时发布：格式 'YYYY-MM-DD HH:MM'")
     p.add_argument("--category", help="视频号原创声明的原创类型（如 知识/教育），可选")
     # 拟人化随机间隔（不传则按平台默认：B站30~90s，抖音/小红书300~720s）
