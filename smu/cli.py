@@ -169,6 +169,12 @@ def cmd_status(args) -> None:
     if pending:
         nxt = pending[0]
         print(f"下一个待投：{'%02d' % nxt.order if nxt.order is not None else ''} {nxt.name}")
+    # 小红书额外显示图文讲义维度（与视频各记各的）
+    if args.platform == "xiaohongshu":
+        from .state import handout_state
+        ho = handout_state(state, args.platform)
+        ho_done = [m for m in mats if m.name in ho]
+        print(f"图文讲义：已发 {len(ho_done)} | 待发 {len(mats) - len(ho_done)}")
 
 
 def cmd_stats(args) -> None:
@@ -376,6 +382,71 @@ def cmd_upload(args) -> None:
         sys.exit(1)
 
 
+def cmd_handout(args) -> None:
+    """发小红书图文讲义（封面图 + PDF附件），半自动停发布前交人手点。与视频各记各的 state。"""
+    if args.platform != "xiaohongshu":
+        fail("handout 目前只支持 --platform xiaohongshu")
+    from .platforms.xhs_handout import HandoutError, publish_handout
+    from .state import handout_state
+
+    mats = M.scan(args.dir)
+    state = load_state()
+    done = handout_state(state, args.platform)
+
+    if args.all:
+        targets = [m for m in mats if m.name not in done]
+    elif args.items:
+        targets = M.select(mats, args.items)
+        already = [m.name for m in targets if m.name in done]
+        if already and not args.force:
+            fail(f"已发过讲义（--force 可重发）：{', '.join(already)}")
+    else:
+        fail("请指定素材（序号/范围/--all），如：smu handout <目录> 14")
+    if not targets:
+        print("没有待发讲义的素材")
+        return
+
+    # ---- 预检：展示封面/PDF/文案，缺关键件默认拒绝 ----
+    print(f"预检 {len(targets)} 个素材 → 小红书图文讲义（封面图+PDF）")
+    print("⚠️ 前置：浏览器需装 XHS Bridge 扩展，且「有且仅有一个」已登录的 creator.xiaohongshu.com 标签页")
+    incomplete: list[str] = []
+    for m in targets:
+        missing = m.missing_for_handout()
+        head = "❌" if missing else "✓ "
+        print(f"\n{head} {m.name}" + (f"  ⚠️缺{','.join(missing)}" if missing else ""))
+        print(f"     封面: {m.cover_vertical.name if m.cover_vertical else '✗'}")
+        print(f"     PDF : {m.handout_pdf.name if m.handout_pdf else '✗'}")
+        print(f"     文案: {m.copies['xiaohongshu'].name if 'xiaohongshu' in m.copies else '✗'}")
+        if missing:
+            incomplete.append(m.name)
+    if incomplete and not args.allow_incomplete:
+        fail(f"{len(incomplete)} 个素材缺关键件（封面/PDF/小红书文案），已全部拒绝。\n"
+             f"  缺件：{' '.join(incomplete)}")
+    targets = [m for m in targets if not m.missing_for_handout()]
+
+    failed = []
+    for i, m in enumerate(targets):
+        print(f"\n[{i + 1}/{len(targets)}] {m.name}")
+        try:
+            rec = publish_handout(m, args)
+        except HandoutError as e:
+            failed.append(m.name)
+            print(f"    ❌ 失败：{e}", file=sys.stderr)
+            continue
+        if not args.dry_run:
+            rec["source"] = "smu"
+            def _merge(disk, _rec=rec, _name=m.name):
+                from .state import handout_state as _hs
+                _hs(disk, args.platform)[_name] = _rec
+            atomic_update(_merge)
+            print(f"    ✅ 讲义已发布")
+
+    print(f"\n完成：成功 {len(targets) - len(failed)}，失败 {len(failed)}")
+    if failed:
+        print("失败列表：", " ".join(failed))
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="smu", description=__doc__,
@@ -451,6 +522,17 @@ def main() -> None:
                    help="跳过发布前去平台查重（默认会查重，命中则跳过避免重复发）")
     p.add_argument("--dry-run", action="store_true", help="只打印命令不上传")
     p.set_defaults(func=cmd_upload)
+
+    p = sub.add_parser("handout", help="发小红书图文讲义（封面图+PDF），半自动手点发布")
+    p.add_argument("dir", type=Path, help="素材目录")
+    p.add_argument("items", nargs="*", help="序号/范围/文件夹名，如 14 或 14-20")
+    p.add_argument("--platform", default="xiaohongshu", help="目前仅 xiaohongshu")
+    p.add_argument("--all", action="store_true", help="发全部未发讲义的素材")
+    p.add_argument("--force", action="store_true", help="允许重发已记录讲义的素材")
+    p.add_argument("--allow-incomplete", action="store_true",
+                   help="允许缺封面/PDF/文案的素材（默认拒绝）")
+    p.add_argument("--dry-run", action="store_true", help="只打印将提交的内容不发布")
+    p.set_defaults(func=cmd_handout)
 
     args = parser.parse_args()
     args.func(args)

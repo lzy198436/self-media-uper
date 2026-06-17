@@ -32,6 +32,7 @@ from pathlib import Path
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm"}
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 COPY_EXTS = {".txt", ".md"}
+PDF_EXTS = {".pdf"}
 
 _COPY_PLATFORMS = {"B站": "bilibili", "抖音": "douyin", "小红书": "xiaohongshu",
                    "视频号": "shipinhao", "微博": "weibo"}
@@ -50,6 +51,7 @@ class Material:
     cover43: Path | None = None
     cover_vertical: Path | None = None
     copies: dict[str, Path] = field(default_factory=dict)  # 平台 → 文案文件
+    handout_pdf: Path | None = None                        # <name>_讲义.pdf（小红书图文附件）
     notes: list[str] = field(default_factory=list)         # 宽容识别/歧义提示
 
     @property
@@ -66,6 +68,21 @@ class Material:
             out.append("4:3封面")
         if "bilibili" not in self.copies:
             out.append("B站文案")
+        return out
+
+    @property
+    def complete_for_handout(self) -> bool:
+        return not self.missing_for_handout()
+
+    def missing_for_handout(self) -> list[str]:
+        """发小红书图文讲义需要：单张竖版封面 + PDF讲义 + 小红书文案。"""
+        out = []
+        if not self.cover_vertical:
+            out.append("竖版封面")
+        if not self.handout_pdf:
+            out.append("PDF讲义")
+        if "xiaohongshu" not in self.copies:
+            out.append("小红书文案")
         return out
 
 
@@ -95,6 +112,7 @@ def _classify(mat: Material, files: list[Path]) -> None:
     videos = [f for f in files if f.suffix.lower() in VIDEO_EXTS]
     images = [f for f in files if f.suffix.lower() in IMG_EXTS]
     texts = [f for f in files if f.suffix.lower() in COPY_EXTS]
+    pdfs = [f for f in files if f.suffix.lower() in PDF_EXTS]
 
     # ---- 视频：竖屏/竖版关键词分流，横版多个时优先同名 ----
     landscape: list[Path] = []
@@ -150,6 +168,14 @@ def _classify(mat: Material, files: list[Path]) -> None:
     if "bilibili" not in mat.copies and len(rest_texts) == 1:
         mat.copies["bilibili"] = rest_texts[0]
         mat.notes.append(f"文件名无平台标识，把唯一文本当B站文案：{rest_texts[0].name}")
+
+    # ---- PDF 讲义（小红书图文附件）：优先带「讲义」关键词，兜底取第一个 ----
+    for f in pdfs:
+        if "讲义" in f.name:
+            mat.handout_pdf = f
+            break
+    if mat.handout_pdf is None and pdfs:
+        mat.handout_pdf = pdfs[0]
 
 
 def _order_of(name: str) -> int | None:

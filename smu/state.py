@@ -70,3 +70,12 @@ def platform_state(state: dict, platform: str) -> dict:
     p = state.setdefault("platforms", {}).setdefault(platform, {})
     p.setdefault("published", {})
     return p
+
+
+def handout_state(state: dict, platform: str = "xiaohongshu") -> dict:
+    """返回平台下的图文讲义发布子状态 handout_published（与视频 published 并列、互不干扰）。
+
+    讲义图文笔记和视频是两种发布物，各记各的：发了视频不代表发了讲义，反之亦然。
+    """
+    p = state.setdefault("platforms", {}).setdefault(platform, {})
+    return p.setdefault("handout_published", {})
