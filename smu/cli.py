@@ -42,7 +42,17 @@ _PROFILES = {
     "steady":       {"interval": (300, 720),  "daily_cap": 10},   # 稳健（默认）：5~12 分钟，10
     "conservative": {"interval": (600, 1200), "daily_cap": 5},    # 保守：10~20 分钟，5
 }
-_BILIBILI_INTERVAL = (30, 90)   # B站 API 上传，间隔可短
+# B站 API 上传，间隔从 30~90 秒拉长到 3~8 分钟：实测一次性集中连发会被判机器批量、全部
+# 压低推荐（"浏览量低"真因）。拉长间隔 + 单次别堆太多，避免集中批量限流。
+_BILIBILI_INTERVAL = (180, 480)
+
+# 各平台安全节奏（按 2026 纯内容/不带货平台规则内置）：编排默认按此守安全线。
+#   interval=条间随机间隔秒；daily_cap=单日稳妥上限(0=无硬日限但别集中)；soft=单次编排软上限
+_PLATFORM_LIMITS = {
+    "bilibili":  {"interval": (180, 480),   "daily_cap": 0,  "soft": 8},   # B站无官方日限，但别集中批量
+    "douyin":    {"interval": (1200, 1800), "daily_cap": 10, "soft": 10},  # 个人号稳妥≤10、间隔≥20min
+    "shipinhao": {"interval": (900, 1500),  "daily_cap": 8,  "soft": 8},   # 稳妥≤8、错峰
+}
 
 
 def _profile(args) -> dict:
@@ -272,8 +282,12 @@ def cmd_upload(args) -> None:
         already = [m.name for m in targets if m.name in published]
         if already and not args.force:
             fail(f"已投稿过（--force 可重投）：{', '.join(already)}")
+    elif getattr(args, "count", None):
+        # --count N：取该平台自己待发的前 N 条（编排/连发用，各平台进度独立）
+        pending = [m for m in mats if m.name not in published]
+        targets = pending[:args.count]
     else:
-        fail("请指定素材（序号/范围/--all），如：smu upload <目录> 11-20")
+        fail("请指定素材（序号/范围/--all/--count），如：smu upload <目录> 11-20")
     if not targets:
         print("没有待投稿的素材")
         return
@@ -458,6 +472,74 @@ def cmd_handout(args) -> None:
         sys.exit(1)
 
 
+# 跨平台串行编排的默认顺序（B站快→抖音→视频号）。小红书不在内：它半自动要人手点，单独发。
+_PUBLISH_ALL_ORDER = ["bilibili", "douyin", "shipinhao"]
+
+
+def _make_upload_args(base, platform: str) -> argparse.Namespace:
+    """为某平台构造 cmd_upload 用的 args，套用该平台的安全节奏（间隔）。"""
+    lim = _PLATFORM_LIMITS.get(platform, {})
+    lo, hi = lim.get("interval", (300, 720))
+    return argparse.Namespace(
+        dir=base.dir, platform=platform,
+        items=[] if base.all else [], all=base.all,
+        count=getattr(base, "count", None),
+        force=False, allow_incomplete=getattr(base, "allow_incomplete", False),
+        title_prefix=None, topic=None, ensure_tags=[],
+        tid=124, human_type2=1010, ai_statement=True, private=False,
+        dtime=None, line=None, account="main", engine=None,
+        schedule=None, category=None,
+        min_interval=lo, max_interval=hi,
+        profile=getattr(base, "profile", None) or "steady",
+        no_daily_cap=False, no_verify=False, dry_run=base.dry_run,
+    )
+
+
+def cmd_publish_all(args) -> None:
+    """跨平台串行编排：B站→抖音→视频号，各从自己待发开始，复用 cmd_upload。
+    串行避免抢焦点/抢 state；某平台失败跳过继续；小红书不含（半自动单独发）。"""
+    order = (args.platforms.split(",") if getattr(args, "platforms", None)
+             else list(_PUBLISH_ALL_ORDER))
+    order = [p for p in order if p != "xiaohongshu"]   # 强制排除小红书
+    cnt = getattr(args, "count", None)
+    if not args.all and not cnt:
+        cnt = 1   # 默认每平台发 1 条
+    mats = M.scan(args.dir)
+
+    print(f"📋 跨平台编排：{' → '.join(order)}（小红书不含，半自动单独发）")
+    print(f"   每平台发{'全部待发' if args.all else f'前 {cnt} 条'}，串行（一个跑完再下一个）\n")
+
+    results = {}
+    for platform in order:
+        print(f"\n{'='*56}\n▶ {platform}\n{'='*56}")
+        pa = _make_upload_args(args, platform)
+        if not args.all:
+            # 取该平台自己待发的前 cnt 条序号
+            state = load_state()
+            done = platform_state(state, platform)["published"]
+            pending = [m for m in mats if m.name not in done]
+            if not pending:
+                print(f"  {platform} 没有待发素材，跳过")
+                results[platform] = "无待发"
+                continue
+            picks = pending[:cnt]
+            pa.items = [str(m.order) if m.order is not None else m.name for m in picks]
+            pa.all = False
+        try:
+            cmd_upload(pa)
+            results[platform] = "✅ 完成"
+        except SystemExit:
+            results[platform] = "❌ 失败（已跳过，继续下一平台）"
+            print(f"  ⚠️ {platform} 发布失败，跳过继续", file=sys.stderr)
+        except Exception as e:
+            results[platform] = f"❌ 异常：{e}"
+            print(f"  ⚠️ {platform} 异常：{e}，跳过继续", file=sys.stderr)
+
+    print(f"\n{'='*56}\n📊 编排汇总")
+    for p in order:
+        print(f"   {p}: {results.get(p, '未执行')}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="smu", description=__doc__,
@@ -534,10 +616,24 @@ def main() -> None:
     p.add_argument("--profile", choices=["aggressive", "steady", "conservative"], default="steady",
                    help="发布档位：aggressive(2~5分/日20) / steady(5~12分/日10,默认) / conservative(10~20分/日5)")
     p.add_argument("--no-daily-cap", action="store_true", help="解除每日上限")
+    p.add_argument("--count", type=int, default=None,
+                   help="发该平台自己待发的前 N 条（各平台进度独立，编排/连发用）")
     p.add_argument("--no-verify", action="store_true",
                    help="跳过发布前去平台查重（默认会查重，命中则跳过避免重复发）")
     p.add_argument("--dry-run", action="store_true", help="只打印命令不上传")
     p.set_defaults(func=cmd_upload)
+
+    p = sub.add_parser("publish-all", help="跨平台串行编排：B站→抖音→视频号（不含小红书）")
+    p.add_argument("dir", type=Path, help="素材目录")
+    p.add_argument("--count", type=int, default=None, help="每平台各发自己待发的前 N 条（默认 1）")
+    p.add_argument("--all", action="store_true", help="每平台各发全部待发（受每日上限截断）")
+    p.add_argument("--platforms", default=None,
+                   help="覆盖默认顺序，逗号分隔（默认 bilibili,douyin,shipinhao；小红书强制排除）")
+    p.add_argument("--profile", choices=["aggressive", "steady", "conservative"], default="steady",
+                   help="浏览器平台发布档位（默认 steady）")
+    p.add_argument("--allow-incomplete", action="store_true", help="允许缺件素材降级")
+    p.add_argument("--dry-run", action="store_true", help="只预演不发")
+    p.set_defaults(func=cmd_publish_all)
 
     p = sub.add_parser("handout", help="发小红书图文讲义（封面图+PDF），半自动手点发布")
     p.add_argument("dir", type=Path, help="素材目录")
