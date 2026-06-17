@@ -154,14 +154,22 @@ def _set_cover(page, cover_path):
         print("WARN 未找到「修改封面」入口（页面可能改版），请手动设封面", file=sys.stderr)
         return False
 
-    # 2) 点弹层里的「上传图片」按钮（.upload-btn），关联出封面 file input
-    time.sleep(1)
+    # 2) 点弹层里的「上传图片」按钮（.upload-btn），关联出封面 file input。
+    #    等弹层渲染完（点修改封面后弹层有延迟）。精确匹配 .upload-btn，不靠 length 过滤
+    #    （.upload-btn 文本含图标空白，length 过滤会误杀）。
+    time.sleep(2)
     try:
         page.evaluate("""(() => {
           const texts = %s;
-          for (const el of document.querySelectorAll('.upload-btn, button, div')) {
+          // 优先 .upload-btn 精确命中
+          for (const el of document.querySelectorAll('.upload-btn')) {
             const t = (el.textContent || '').trim();
-            if (texts.some(x => t.includes(x)) && t.length < 8) { el.click(); return 'clicked'; }
+            if (texts.some(x => t === x || t.includes(x))) { el.click(); return 'clicked-btn'; }
+          }
+          // 退路：任意元素文本精确等于「上传图片」
+          for (const el of document.querySelectorAll('div, button, span')) {
+            const t = (el.textContent || '').trim();
+            if (texts.includes(t)) { el.click(); return 'clicked-text'; }
           }
           return 'not_found';
         })()""" % json.dumps(_COVER_UPLOAD_BTN_TEXTS))
@@ -170,7 +178,7 @@ def _set_cover(page, cover_path):
 
     # 3) 等封面 image input 出现，灌封面图（精确选 accept*=image，避开视频 input）
     sel = None
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 12
     while time.monotonic() < deadline:
         try:
             if page.has_element(_COVER_IMAGE_INPUT):
