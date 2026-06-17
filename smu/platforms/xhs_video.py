@@ -90,18 +90,15 @@ _COVER_DUMP_JS = r"""
 })()
 """
 
-# 封面上传入口候选（联调实测后回填真实 selector）。封面 input 限图片，与视频 input(video/*) 区分。
-_COVER_INPUT_CANDIDATES = [
-    'input[type="file"][accept*="image"]',
-    '.cover-edit-container input[type="file"]',
-    '.cover-uploader input[type="file"]',
-]
-_COVER_OPEN_BTN_TEXTS = ['编辑封面', '设置封面', '选择封面', '修改封面']
+# 封面 selector（实测确定）：视频处理完后封面区有「修改封面」(.operator 容器)，点它弹出
+# 封面编辑弹层，弹层里 .cover-container input[type=file] accept=image/*，灌图后点「确定」。
+_COVER_MODAL_INPUT = '.cover-container input[type="file"]'
+_COVER_OPEN_BTN_TEXTS = ['修改封面', '编辑封面', '设置封面', '选择封面']
 _COVER_CONFIRM_TEXTS = ['确定', '完成', '应用', '保存']
 
 
 def _dump_cover_dom(page):
-    """联调诊断：把封面相关 DOM 打到 stderr，用于回填真实 selector。SMU_DUMP_COVER=1 时启用。"""
+    """联调诊断：把封面相关 DOM 打到 stderr。SMU_DUMP_COVER=1 时启用。"""
     try:
         print("[cover-dump] " + (page.evaluate(_COVER_DUMP_JS) or ""), file=sys.stderr)
     except Exception as e:
@@ -109,49 +106,54 @@ def _dump_cover_dom(page):
 
 
 def _set_cover(page, cover_path):
-    """传完视频、处理完后设封面。best-effort：找不到/失败只 WARN 不致命（真人手动补）。"""
+    """传完视频、处理完后设封面（实测流程）。best-effort：每步有界等待，失败只 WARN 不卡死。"""
     if not cover_path:
         return False
     if os.environ.get("SMU_DUMP_COVER") == "1":
         _dump_cover_dom(page)
+    print("[cover] 开始设封面…", file=sys.stderr)
 
-    def _find_input():
-        for sel in _COVER_INPUT_CANDIDATES:
-            try:
-                if page.has_element(sel):
-                    return sel
-            except Exception:
-                pass
-        return None
+    # 1) 点「修改封面」打开弹层（点 .operator 容器，文案在它的 .text 子元素里）
+    try:
+        clicked = page.evaluate("""(() => {
+          const texts = %s;
+          for (const el of document.querySelectorAll('.text, span, div')) {
+            const t = (el.textContent || '').trim();
+            if (t && texts.includes(t)) { (el.closest('.operator') || el).click(); return 'clicked'; }
+          }
+          return 'not_found';
+        })()""" % json.dumps(_COVER_OPEN_BTN_TEXTS))
+    except Exception as e:
+        print(f"WARN 点「修改封面」异常：{e}（请手动设封面）", file=sys.stderr)
+        return False
+    if clicked != 'clicked':
+        print("WARN 未找到「修改封面」入口（页面可能改版），请手动设封面", file=sys.stderr)
+        return False
 
-    sel = _find_input()
-    if not sel:
-        # 先点「编辑封面」打开弹窗，再找 input
+    # 2) 等弹层封面 file input 出现（有界 10s）
+    sel = None
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
         try:
-            page.evaluate("""(() => {
-              const texts = %s;
-              for (const el of document.querySelectorAll('button, span, div')) {
-                if (el.children.length > 3) continue;
-                if (texts.includes((el.textContent || '').trim())) { el.click(); return 'clicked'; }
-              }
-              return 'not_found';
-            })()""" % json.dumps(_COVER_OPEN_BTN_TEXTS))
+            if page.has_element(_COVER_MODAL_INPUT):
+                sel = _COVER_MODAL_INPUT
+                break
         except Exception:
             pass
-        deadline = time.monotonic() + 8
-        while time.monotonic() < deadline and not sel:
-            sel = _find_input()
-            time.sleep(0.5)
+        time.sleep(0.5)
     if not sel:
-        print("WARN 未找到封面上传入口（selector 需联调实测，可设 SMU_DUMP_COVER=1 看 DOM），"
-              "跳过自动设封面，请发布前手动设", file=sys.stderr)
+        print("WARN 封面弹层 file input 没出现，请手动设封面", file=sys.stderr)
         return False
+
+    # 3) 灌封面图
     try:
         page.set_file_input(sel, [cover_path])
     except Exception as e:
         print(f"WARN 灌封面失败：{e}（请手动设封面）", file=sys.stderr)
         return False
-    time.sleep(1.5)
+    time.sleep(2)   # 等裁剪预览渲染
+
+    # 4) 点「确定」收尾
     try:
         page.evaluate("""(() => {
           const texts = %s;
@@ -162,7 +164,7 @@ def _set_cover(page, cover_path):
         })()""" % json.dumps(_COVER_CONFIRM_TEXTS))
     except Exception:
         pass
-    print("[cover] 已尝试设封面，请发布前核对", file=sys.stderr)
+    print("[cover] 封面已设（请发布前核对缩略图）", file=sys.stderr)
     return True
 
 
@@ -187,6 +189,7 @@ while time.monotonic() < deadline:
 if not clicked:
     print("ERR 没找到/点不中「上传视频」tab", file=sys.stderr); sys.exit(2)
 time.sleep(1.5)
+print("[step] 已点上传视频tab，开始传视频…", file=sys.stderr)
 
 # 2) 传视频 + 等处理完（_upload_video 内含 set_file_input + 等发布按钮可点，最长约10min）
 try:
@@ -194,12 +197,14 @@ try:
 except Exception as e:
     print(f"ERR 传视频/等待处理失败：{e}", file=sys.stderr); sys.exit(2)
 
+print("[step] 视频已传完、处理完，开始填标题/正文/标签…", file=sys.stderr)
 # 3) 填标题/正文/标签（不点发布）
 try:
     _fill_publish_video_form(page, a.title, a.content, tags, None, "")
 except Exception as e:
     print(f"ERR 填表单失败：{e}", file=sys.stderr); sys.exit(2)
 
+print("[step] 文案已填，处理封面…", file=sys.stderr)
 # 4) 自动设封面（best-effort）
 if a.cover:
     try:
