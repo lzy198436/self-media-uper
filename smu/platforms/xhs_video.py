@@ -130,43 +130,64 @@ def _dump_cover_dom(page):
 
 
 def _set_cover(page, cover_path):
-    """传完视频、处理完后设封面（实测流程）。best-effort：每步有界等待，失败只 WARN 不卡死。"""
+    """传完视频、处理完后设封面（CDP 真鼠标实测通过）。best-effort：失败只 WARN 不卡死。
+
+    封面区「修改封面」按钮靠 CSS :hover 显示（平时宽高0），合成事件触发不了，必须用
+    CDP Input.dispatchMouseEvent 真鼠标 hover。流程（实测验证）：
+      ① CDP hover .default.column（封面图块）→「修改封面」从 w0 变可见
+      ② CDP 点「修改封面」→ 弹层打开
+      ③ 点弹层「上传图片」→ 灌 image input → 确定
+    """
     if not cover_path:
         return False
-    if os.environ.get("SMU_DUMP_COVER") == "1":
-        _dump_cover_dom(page)
-    print("[cover] 开始设封面…", file=sys.stderr)
+    print("[cover] 开始设封面（CDP 真鼠标）…", file=sys.stderr)
 
-    # 1) 点「修改封面」打开弹层（点 .operator 容器，文案在它的 .text 子元素里）
-    try:
-        clicked = page.evaluate("""(() => {
-          const texts = %s;
-          for (const el of document.querySelectorAll('.text, span, div')) {
-            const t = (el.textContent || '').trim();
-            if (t && texts.includes(t)) { (el.closest('.operator') || el).click(); return 'clicked'; }
-          }
-          return 'not_found';
-        })()""" % json.dumps(_COVER_OPEN_BTN_TEXTS))
-    except Exception as e:
-        print(f"WARN 点「修改封面」异常：{e}（请手动设封面）", file=sys.stderr)
+    # 1) CDP hover 封面图块 .default.column，让「修改封面」显形，再取其坐标 CDP 点击
+    area = page.evaluate("""(() => {
+      const dc = document.querySelector('.default.column');
+      if (!dc) return null;
+      const r = dc.getBoundingClientRect();
+      return JSON.stringify({x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2)});
+    })()""")
+    if not area:
+        print("WARN 没找到封面图块 .default.column，请手动设封面", file=sys.stderr)
         return False
-    if clicked != 'clicked':
-        print("WARN 未找到「修改封面」入口（页面可能改版），请手动设封面", file=sys.stderr)
+    import json as _json
+    c = _json.loads(area)
+    try:
+        page.cdp_hover(x=c["x"], y=c["y"])
+    except Exception as e:
+        print(f"WARN CDP hover 失败：{e}（扩展可能没加载 CDP 命令，请手动设封面）", file=sys.stderr)
+        return False
+    time.sleep(1.2)
+    # 取「修改封面」按钮坐标（hover 后应可见）
+    btn = page.evaluate("""(() => {
+      const e = [...document.querySelectorAll('.text')].find(x => (x.textContent||'').trim()==='修改封面');
+      if (!e) return null;
+      const r = e.getBoundingClientRect();
+      if (r.width === 0) return null;
+      return JSON.stringify({x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2)});
+    })()""")
+    if not btn:
+        print("WARN CDP hover 后「修改封面」仍不可见，请手动设封面", file=sys.stderr)
+        return False
+    b = _json.loads(btn)
+    try:
+        page.cdp_click(x=b["x"], y=b["y"])   # CDP 真鼠标点击「修改封面」
+    except Exception as e:
+        print(f"WARN CDP 点「修改封面」失败：{e}（请手动设封面）", file=sys.stderr)
         return False
 
     # 2) 点弹层里的「上传图片」按钮（.upload-btn），关联出封面 file input。
-    #    等弹层渲染完（点修改封面后弹层有延迟）。精确匹配 .upload-btn，不靠 length 过滤
-    #    （.upload-btn 文本含图标空白，length 过滤会误杀）。
+    #    精确匹配 .upload-btn，不靠 length 过滤（含图标空白会误杀）。
     time.sleep(2)
     try:
         page.evaluate("""(() => {
           const texts = %s;
-          // 优先 .upload-btn 精确命中
           for (const el of document.querySelectorAll('.upload-btn')) {
             const t = (el.textContent || '').trim();
             if (texts.some(x => t === x || t.includes(x))) { el.click(); return 'clicked-btn'; }
           }
-          // 退路：任意元素文本精确等于「上传图片」
           for (const el of document.querySelectorAll('div, button, span')) {
             const t = (el.textContent || '').trim();
             if (texts.includes(t)) { el.click(); return 'clicked-text'; }
@@ -260,18 +281,16 @@ while time.monotonic() < _dl:
 if not _ready:
     print("ERR 等视频处理超时(10分钟)，或发布按钮没出现（页面可能改版）", file=sys.stderr); sys.exit(2)
 
-print("[step] 视频已传完、处理完，填标题/正文/标签…", file=sys.stderr)
-# 3) 封面默认交真人手动设：封面区的「修改封面」按钮靠 CSS :hover 显示，而扩展的合成鼠标
-#    事件触发不了 CSS :hover（和 isTrusted 同源的固有局限），自动设不可靠。真人鼠标移上去
-#    :hover 自然触发——这正是半自动里合理的"真人操作"。SMU_AUTO_COVER=1 可试自动（不保证）。
-if a.cover and os.environ.get("SMU_AUTO_COVER") == "1":
+print("[step] 视频已传完、处理完，先设封面（CDP 真鼠标，趁页面干净无下拉框）…", file=sys.stderr)
+# 3) 自动设封面（CDP 真鼠标 hover 出「修改封面」→点击→上传图片→灌图→确定，实测通过）。
+#    放标签之前：填标签会弹话题下拉框浮层挡住封面区。SMU_NO_COVER=1 可关走手动。
+if a.cover and os.environ.get("SMU_NO_COVER") != "1":
     try:
         _set_cover(page, a.cover)
     except Exception as e:
         print(f"WARN 设封面异常（请手动设）：{e}", file=sys.stderr)
 elif a.cover:
-    print(f"[cover] 封面请手动设：鼠标移到封面区→点「修改封面」→上传图片→选"
-          f"{os.path.basename(a.cover)}（在素材目录里）", file=sys.stderr)
+    print(f"[cover] 封面请手动设：{os.path.basename(a.cover)}", file=sys.stderr)
 
 print("[step] 文案处理：填标题/正文/标签…", file=sys.stderr)
 # 4) 填标题/正文/标签（不点发布）。标签会弹话题下拉框，填完主动关，避免浮层挡住「发布」。
@@ -294,7 +313,7 @@ if not sys.stdin or not sys.stdin.isatty():
           file=sys.stderr); sys.exit(2)
 print("\n" + "=" * 56, file=sys.stderr)
 print(" 小红书视频已填好（视频 + 标题 + 正文 + 标签 + 封面）", file=sys.stderr)
-print("    1) 设封面：鼠标移到封面区→点「修改封面」→上传图片（封面靠hover显示，脚本设不了）", file=sys.stderr)
+print("    1) 核对封面是否设上（脚本已 CDP 自动设，没设上请手动设）", file=sys.stderr)
 print("    2) 随手刷两下信息流/看通知（降脚本特征）", file=sys.stderr)
 print("    3) 核对/修改标题正文（真人编辑），亲手点「发布」", file=sys.stderr)
 print("    完成后回到这里按【回车】，我来核对结果。", file=sys.stderr)
