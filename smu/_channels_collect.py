@@ -1,9 +1,9 @@
 """视频号数据采集（跑在 sau 的 venv，仅依赖 patchright）。
 
-思路同小红书（拦截页面已签名响应，免签名）：
-打开视频号助手数据中心 → 页面调
-`/micro/content/cgi-bin/mmfinderassistant-bin/post/post_list` 拉「我的视频列表(含统计)」
-→ 拦截该响应 → 打印 JSON 到 stdout 供 smu 解析。
+打开视频号助手「帖子管理」页 /platform/post/list（不是 dataCenter——它会重定向到首页只剩
+最近 5 条），拦截首个 `post/post_list` 请求拿到 URL+body 模板，再在页面上下文用 fetch
+复刻该请求、递增 currentPage 翻页直到 continueFlag=False，拿全部视频（含统计）。
+这样复用页面自己的 cookie+签名，免签名，且能翻全（实测 52 条全拿到，旧滚动法只 5 条）。
 
 用法：<sau_venv_python> _channels_collect.py <cookie_json_path>
 输出：stdout 一行 JSON：{"notes": [...]}（出错则 {"error": "..."}）
@@ -20,7 +20,38 @@ except Exception as e:  # noqa: BLE001
     sys.exit(0)
 
 POST_API = "post/post_list"
-DATA_CENTER = "https://channels.weixin.qq.com/platform/dataCenter"
+POST_LIST_PAGE = "https://channels.weixin.qq.com/platform/post/list"
+
+# 页面上下文翻页脚本：复刻首个 post_list 请求，递增 currentPage 直到 continueFlag=False。
+_PAGINATE_JS = """async (args) => {
+  const [url, bodyStr] = args;
+  const base = JSON.parse(bodyStr);
+  const all = [];
+  const seen = {};
+  let page = 1, total = 0;
+  for (let i = 0; i < 30; i++) {
+    base.currentPage = page;
+    base.timestamp = String(Date.now());
+    let j;
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(base),
+        credentials: 'include',
+      });
+      j = await resp.json();
+    } catch (e) { break; }
+    const d = (j && j.data) || {};
+    total = d.totalCount || total;
+    for (const n of (d.list || [])) {
+      if (n.objectId && !seen[n.objectId]) { seen[n.objectId] = 1; all.push(n); }
+    }
+    if (!d.continueFlag) break;
+    page++;
+  }
+  return {list: all, total: total};
+}"""
 
 
 def main() -> None:
@@ -29,55 +60,42 @@ def main() -> None:
         print(json.dumps({"error": f"cookie 不存在: {cookie_path}"}))
         return
 
-    by_id: dict[str, dict] = {}
+    tmpl = {"url": None, "body": None}
 
-    def on_response(resp):
-        if POST_API not in resp.url:
-            return
-        try:
-            for n in resp.json().get("data", {}).get("list", []):
-                oid = n.get("objectId")
-                if oid:
-                    by_id[oid] = n
-        except Exception:
-            pass
+    def on_request(req):
+        if POST_API in req.url and tmpl["url"] is None:
+            tmpl["url"] = req.url
+            tmpl["body"] = req.post_data
 
     # 视频号会话主要在 localStorage：必须用 new_context(storage_state=完整json) 恢复，
-    # 而非只 add_cookies(只灌 cookie=登出态，post_list 抓不到)。普通独立浏览器即可，
-    # 不用持久化 profile(实测会有同目录并发 launch 崩溃，且非必要)。
+    # 而非只 add_cookies(只灌 cookie=登出态，post_list 抓不到)。普通独立浏览器即可。
+    items: list = []
+    total = 0
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False, channel="chrome")
         ctx = browser.new_context(storage_state=str(cookie_path))
         try:
             page = ctx.new_page()
-            page.on("response", on_response)
-            page.goto(DATA_CENTER, wait_until="networkidle", timeout=45000)
-            page.wait_for_timeout(7000)
-            # 翻页：滚到底触发 post_list 续拉。旧版只滚 8 轮、数量稳定 1 轮就停 →
-            # 漏抓（实测 11 条只拿到 5）。改成最多 25 轮、连续 3 轮无新增才停，宁慢勿漏。
-            last = -1
-            stable = 0
-            for _ in range(25):
-                cur = len(by_id)
-                if cur == last:
-                    stable += 1
-                    if cur > 0 and stable >= 3:
-                        break
-                else:
-                    stable = 0
-                last = cur
-                try:
-                    page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
-                except Exception:
-                    pass
-                page.wait_for_timeout(2500)
-            print(f"[channels] 拦截到 {len(by_id)} 条 | url={page.url}", file=sys.stderr)
+            page.on("request", on_request)
+            page.goto(POST_LIST_PAGE, wait_until="domcontentloaded", timeout=45000)
+            # 等首个 post_list 请求出现（拿到 URL+body 模板）
+            for _ in range(20):
+                if tmpl["url"]:
+                    break
+                page.wait_for_timeout(500)
+            if not tmpl["url"]:
+                print(json.dumps({"error": "未捕获 post_list 请求（页面结构变化或未登录）"}))
+                return
+            result = page.evaluate(_PAGINATE_JS, [tmpl["url"], tmpl["body"]])
+            items = result.get("list", [])
+            total = result.get("total", 0)
+            print(f"[channels] 翻页拿到 {len(items)}/{total} 条 | url={page.url}", file=sys.stderr)
         finally:
             ctx.close()
             browser.close()
 
     notes = []
-    for n in by_id.values():
+    for n in items:
         desc = n.get("desc") or {}
         # shortTitle 形如 [{"shortTitle": "你会借钱吗？"}]，可能为空串
         st = ""
