@@ -252,15 +252,8 @@ while time.monotonic() < _dl:
 if not _ready:
     print("ERR 等视频处理超时(10分钟)，或发布按钮没出现（页面可能改版）", file=sys.stderr); sys.exit(2)
 
-print("[step] 视频已传完、处理完，开始填标题/正文/标签…", file=sys.stderr)
-# 3) 填标题/正文/标签（不点发布）
-try:
-    _fill_publish_video_form(page, a.title, a.content, tags, None, "")
-except Exception as e:
-    print(f"ERR 填表单失败：{e}", file=sys.stderr); sys.exit(2)
-
-print("[step] 文案已填，处理封面…", file=sys.stderr)
-# 4) 自动设封面（三步：修改封面→上传图片→灌 image input→确定，实测确定）。
+print("[step] 视频已传完、处理完，先设封面（趁页面干净，无话题下拉框干扰）…", file=sys.stderr)
+# 3) 先设封面（顺序调整：填标签会弹话题下拉框浮层挡住封面区，所以封面放标签之前）
 #    SMU_NO_COVER=1 可关掉走手动（封面弹层 DOM 再改版时的退路）。
 if a.cover and os.environ.get("SMU_NO_COVER") != "1":
     try:
@@ -270,6 +263,22 @@ if a.cover and os.environ.get("SMU_NO_COVER") != "1":
 elif a.cover:
     print(f"[cover] 封面请手动设：素材目录里的 {os.path.basename(a.cover)}（或选视频帧）",
           file=sys.stderr)
+
+print("[step] 封面处理完，填标题/正文/标签…", file=sys.stderr)
+# 4) 填标题/正文/标签（不点发布）。标签放最后——它会弹话题下拉框，弹完直接进半自动停顿，
+#    不影响后续（封面已在前面设好）。填完主动关下拉框，避免浮层挡住「发布」按钮。
+try:
+    _fill_publish_video_form(page, a.title, a.content, tags, None, "")
+except Exception as e:
+    print(f"ERR 填表单失败：{e}", file=sys.stderr); sys.exit(2)
+# 关闭话题联想下拉框（Esc + 点空白），避免浮层挡住发布/导致你手点发布被吞
+try:
+    page.press_key('Escape')
+    time.sleep(0.3)
+    page.evaluate("(() => { document.body.click(); return 'ok'; })()")
+    page.press_key('Escape')
+except Exception:
+    pass
 
 # 5) 半自动停顿：交人真人编辑 + 手点发布（非交互终端如实报错，绝不自动发）
 if not sys.stdin or not sys.stdin.isatty():
