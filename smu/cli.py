@@ -26,7 +26,7 @@ from pathlib import Path
 
 from . import materials as M
 from .platforms import get_platform
-from .state import STATE_FILE, load_state, platform_state, save_state
+from .state import atomic_update, load_state, platform_state
 
 # 中性默认值：具体项目的标题前缀/话题/固定标签放素材目录的 smu.json，不写死在代码里。
 DEFAULTS = {
@@ -207,9 +207,12 @@ def cmd_renew(args) -> None:
 def cmd_sync(args) -> None:
     mats = M.scan(args.dir)
     platform = get_platform(args.platform)
-    state = load_state()
-    matched = platform.sync(mats, state)
-    save_state(state)
+    matched: list = []
+    # sync 含网络拉取，整体走 atomic_update：锁内 reload→sync(改 state)→写回，
+    # 不会被并发的 upload 覆盖(sync 是低频运维，持锁期间阻塞 upload 可接受)。
+    def _sync(state):
+        matched.extend(platform.sync(mats, state))
+    atomic_update(_sync)
     if matched:
         print(f"对账完成，新标记 {len(matched)} 个已投稿：")
         for name, vid in matched:
@@ -222,18 +225,20 @@ def cmd_sync(args) -> None:
 def cmd_mark(args) -> None:
     mats = M.scan(args.dir)
     picked = M.select(mats, args.items)
-    state = load_state()
-    published = platform_state(state, args.platform)["published"]
-    for m in picked:
-        if args.unmark:
-            published.pop(m.name, None)
-            print(f"  ↩️ 取消标记 {m.name}")
-        else:
-            published.setdefault(m.name, {
-                "bvid": "", "title": m.name, "source": "manual",
-                "at": datetime.now(timezone.utc).isoformat()})
-            print(f"  ✅ 标记已投稿 {m.name}")
-    save_state(state)
+    names = [m.name for m in picked]
+
+    def _mark(state):
+        published = platform_state(state, args.platform)["published"]
+        for name in names:
+            if args.unmark:
+                published.pop(name, None)
+                print(f"  ↩️ 取消标记 {name}")
+            else:
+                published.setdefault(name, {
+                    "bvid": "", "title": name, "source": "manual",
+                    "at": datetime.now(timezone.utc).isoformat()})
+                print(f"  ✅ 标记已投稿 {name}")
+    atomic_update(_mark)
 
 
 def cmd_upload(args) -> None:
@@ -316,10 +321,13 @@ def cmd_upload(args) -> None:
                 hit = next((r for r in remote if title_matches(m.name, r.get("title", ""))), None)
                 if hit:
                     print(f"     ⏭️ 跳过 {m.name}：平台已存在「{hit.get('title', '')[:30]}」{hit.get('id', '')}")
-                    published[m.name] = {
+                    rec = {
                         "id": hit.get("id", ""), "title": hit.get("title", ""),
                         "source": "verify", "at": datetime.now(timezone.utc).isoformat()}
-                    save_state(state)
+                    def _merge(disk, _rec=rec, _name=m.name):
+                        platform_state(disk, args.platform)["published"][_name] = _rec
+                    state = atomic_update(_merge)
+                    published = platform_state(state, args.platform)["published"]
                 else:
                     survivors.append(m)
             skipped = len(targets) - len(survivors)
@@ -341,8 +349,16 @@ def cmd_upload(args) -> None:
             record = None
         if record and not args.dry_run:
             record["source"] = "smu"
-            published[mat.name] = record
-            save_state(state)
+            # 并发安全：锁内 reload 最新→只合并这条 published(+本进程新增的 topics 缓存)→写回，
+            # 不再整盘覆盖。多平台并发跑时各自的记录都保得住(根治 B站丢 18 条)。
+            def _merge(disk, _rec=record, _name=mat.name):
+                dp = platform_state(disk, args.platform)
+                dp["published"][_name] = _rec
+                mem_topics = platform_state(state, args.platform).get("topics")
+                if mem_topics:
+                    dp.setdefault("topics", {}).update(mem_topics)
+            state = atomic_update(_merge)
+            published = platform_state(state, args.platform)["published"]
             ident = record.get("bvid") or record.get("id") or ""
             sched = f"（定时 {record['scheduled']}）" if record.get("scheduled") else ""
             print(f"    ✅ 投稿成功 {ident}{sched}")
