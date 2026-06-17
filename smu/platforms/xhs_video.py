@@ -260,21 +260,21 @@ while time.monotonic() < _dl:
 if not _ready:
     print("ERR 等视频处理超时(10分钟)，或发布按钮没出现（页面可能改版）", file=sys.stderr); sys.exit(2)
 
-print("[step] 视频已传完、处理完，先设封面（趁页面干净，无话题下拉框干扰）…", file=sys.stderr)
-# 3) 先设封面（顺序调整：填标签会弹话题下拉框浮层挡住封面区，所以封面放标签之前）
-#    SMU_NO_COVER=1 可关掉走手动（封面弹层 DOM 再改版时的退路）。
-if a.cover and os.environ.get("SMU_NO_COVER") != "1":
+print("[step] 视频已传完、处理完，填标题/正文/标签…", file=sys.stderr)
+# 3) 封面默认交真人手动设：封面区的「修改封面」按钮靠 CSS :hover 显示，而扩展的合成鼠标
+#    事件触发不了 CSS :hover（和 isTrusted 同源的固有局限），自动设不可靠。真人鼠标移上去
+#    :hover 自然触发——这正是半自动里合理的"真人操作"。SMU_AUTO_COVER=1 可试自动（不保证）。
+if a.cover and os.environ.get("SMU_AUTO_COVER") == "1":
     try:
         _set_cover(page, a.cover)
     except Exception as e:
         print(f"WARN 设封面异常（请手动设）：{e}", file=sys.stderr)
 elif a.cover:
-    print(f"[cover] 封面请手动设：素材目录里的 {os.path.basename(a.cover)}（或选视频帧）",
-          file=sys.stderr)
+    print(f"[cover] 封面请手动设：鼠标移到封面区→点「修改封面」→上传图片→选"
+          f"{os.path.basename(a.cover)}（在素材目录里）", file=sys.stderr)
 
-print("[step] 封面处理完，填标题/正文/标签…", file=sys.stderr)
-# 4) 填标题/正文/标签（不点发布）。标签放最后——它会弹话题下拉框，弹完直接进半自动停顿，
-#    不影响后续（封面已在前面设好）。填完主动关下拉框，避免浮层挡住「发布」按钮。
+print("[step] 文案处理：填标题/正文/标签…", file=sys.stderr)
+# 4) 填标题/正文/标签（不点发布）。标签会弹话题下拉框，填完主动关，避免浮层挡住「发布」。
 try:
     _fill_publish_video_form(page, a.title, a.content, tags, None, "")
 except Exception as e:
@@ -294,7 +294,7 @@ if not sys.stdin or not sys.stdin.isatty():
           file=sys.stderr); sys.exit(2)
 print("\n" + "=" * 56, file=sys.stderr)
 print(" 小红书视频已填好（视频 + 标题 + 正文 + 标签 + 封面）", file=sys.stderr)
-print("    1) 核对封面是否设上（脚本已自动设，没设上请点「修改封面」手动设）", file=sys.stderr)
+print("    1) 设封面：鼠标移到封面区→点「修改封面」→上传图片（封面靠hover显示，脚本设不了）", file=sys.stderr)
 print("    2) 随手刷两下信息流/看通知（降脚本特征）", file=sys.stderr)
 print("    3) 核对/修改标题正文（真人编辑），亲手点「发布」", file=sys.stderr)
 print("    完成后回到这里按【回车】，我来核对结果。", file=sys.stderr)
