@@ -178,24 +178,10 @@ def _set_cover(page, cover_path):
         print(f"WARN CDP 点「修改封面」失败：{e}（请手动设封面）", file=sys.stderr)
         return False
 
-    # 2) 点弹层里的「上传图片」按钮（.upload-btn），关联出封面 file input。
-    #    精确匹配 .upload-btn，不靠 length 过滤（含图标空白会误杀）。
-    time.sleep(2)
-    try:
-        page.evaluate("""(() => {
-          const texts = %s;
-          for (const el of document.querySelectorAll('.upload-btn')) {
-            const t = (el.textContent || '').trim();
-            if (texts.some(x => t === x || t.includes(x))) { el.click(); return 'clicked-btn'; }
-          }
-          for (const el of document.querySelectorAll('div, button, span')) {
-            const t = (el.textContent || '').trim();
-            if (texts.includes(t)) { el.click(); return 'clicked-text'; }
-          }
-          return 'not_found';
-        })()""" % json.dumps(_COVER_UPLOAD_BTN_TEXTS))
-    except Exception:
-        pass
+    # 2) 不点「上传图片」按钮（CDP 真点击会触发原生访达文件框，卡死）。封面 image input
+    #    (.cover-container 里 accept=image/* 的隐藏 input)弹层一打开就一直在 DOM，
+    #    直接 set_file_input 灌它（CDP DOM.setFileInputFiles，绕过点击和文件框）。
+    time.sleep(1.5)
 
     # 3) 等封面 image input 出现，灌封面图（精确选 accept*=image，避开视频 input）
     sel = None
