@@ -110,10 +110,14 @@ _COVER_DUMP_JS = r"""
 })()
 """
 
-# 封面 selector（实测确定）：视频处理完后封面区有「修改封面」(.operator 容器)，点它弹出
-# 封面编辑弹层，弹层里 .cover-container input[type=file] accept=image/*，灌图后点「确定」。
-_COVER_MODAL_INPUT = '.cover-container input[type="file"]'
+# 封面 selector（实测确定，三层结构）：
+#   ① 点「修改封面」(.operator 容器，文案在 .text 子元素) → 打开封面编辑弹层
+#   ② 点弹层里的「上传图片」(.upload-btn) → 关联出封面 file input
+#   ③ 灌图到 image input（弹层有两个 file input：视频的 accept=.mp4.. 和封面的 accept=image/*，
+#      必须用 accept*=image 精确选封面那个，否则灌成视频）→ 点「确定」应用
+_COVER_IMAGE_INPUT = 'input[type="file"][accept*="image"]'
 _COVER_OPEN_BTN_TEXTS = ['修改封面', '编辑封面', '设置封面', '选择封面']
+_COVER_UPLOAD_BTN_TEXTS = ['上传图片', '上传封面']
 _COVER_CONFIRM_TEXTS = ['确定', '完成', '应用', '保存']
 
 
@@ -150,30 +154,42 @@ def _set_cover(page, cover_path):
         print("WARN 未找到「修改封面」入口（页面可能改版），请手动设封面", file=sys.stderr)
         return False
 
-    # 2) 等弹层封面 file input 出现（有界 10s）
+    # 2) 点弹层里的「上传图片」按钮（.upload-btn），关联出封面 file input
+    time.sleep(1)
+    try:
+        page.evaluate("""(() => {
+          const texts = %s;
+          for (const el of document.querySelectorAll('.upload-btn, button, div')) {
+            const t = (el.textContent || '').trim();
+            if (texts.some(x => t.includes(x)) && t.length < 8) { el.click(); return 'clicked'; }
+          }
+          return 'not_found';
+        })()""" % json.dumps(_COVER_UPLOAD_BTN_TEXTS))
+    except Exception:
+        pass
+
+    # 3) 等封面 image input 出现，灌封面图（精确选 accept*=image，避开视频 input）
     sel = None
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         try:
-            if page.has_element(_COVER_MODAL_INPUT):
-                sel = _COVER_MODAL_INPUT
+            if page.has_element(_COVER_IMAGE_INPUT):
+                sel = _COVER_IMAGE_INPUT
                 break
         except Exception:
             pass
         time.sleep(0.5)
     if not sel:
-        print("WARN 封面弹层 file input 没出现，请手动设封面", file=sys.stderr)
+        print("WARN 封面图 input 没出现，请手动设封面", file=sys.stderr)
         return False
-
-    # 3) 灌封面图
     try:
         page.set_file_input(sel, [cover_path])
     except Exception as e:
         print(f"WARN 灌封面失败：{e}（请手动设封面）", file=sys.stderr)
         return False
-    time.sleep(2)   # 等裁剪预览渲染
+    time.sleep(2.5)   # 等裁剪预览渲染
 
-    # 4) 点「确定」收尾
+    # 4) 点「确定」应用
     try:
         page.evaluate("""(() => {
           const texts = %s;
@@ -244,12 +260,16 @@ except Exception as e:
     print(f"ERR 填表单失败：{e}", file=sys.stderr); sys.exit(2)
 
 print("[step] 文案已填，处理封面…", file=sys.stderr)
-# 4) 自动设封面（best-effort）
-if a.cover:
+# 4) 自动设封面（三步：修改封面→上传图片→灌 image input→确定，实测确定）。
+#    SMU_NO_COVER=1 可关掉走手动（封面弹层 DOM 再改版时的退路）。
+if a.cover and os.environ.get("SMU_NO_COVER") != "1":
     try:
         _set_cover(page, a.cover)
     except Exception as e:
         print(f"WARN 设封面异常（请手动设）：{e}", file=sys.stderr)
+elif a.cover:
+    print(f"[cover] 封面请手动设：素材目录里的 {os.path.basename(a.cover)}（或选视频帧）",
+          file=sys.stderr)
 
 # 5) 半自动停顿：交人真人编辑 + 手点发布（非交互终端如实报错，绝不自动发）
 if not sys.stdin or not sys.stdin.isatty():
@@ -257,7 +277,7 @@ if not sys.stdin or not sys.stdin.isatty():
           file=sys.stderr); sys.exit(2)
 print("\n" + "=" * 56, file=sys.stderr)
 print(" 小红书视频已填好（视频 + 标题 + 正文 + 标签 + 封面）", file=sys.stderr)
-print("    1) 核对封面是否设上（自动设封面是实验功能，没设上请手动设）", file=sys.stderr)
+print("    1) 核对封面是否设上（脚本已自动设，没设上请点「修改封面」手动设）", file=sys.stderr)
 print("    2) 随手刷两下信息流/看通知（降脚本特征）", file=sys.stderr)
 print("    3) 核对/修改标题正文（真人编辑），亲手点「发布」", file=sys.stderr)
 print("    完成后回到这里按【回车】，我来核对结果。", file=sys.stderr)
