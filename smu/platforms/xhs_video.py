@@ -312,16 +312,18 @@ def _url():
         return page.evaluate("window.location.href") or ""
     except Exception:
         return ""
-for _ in range(10):
-    u = _url()
-    if "publish/success" in u or "/publish/publish" not in u:
-        print("OK 已离开发布页，按成功处理"); sys.exit(0)
+def _published(u):
+    # 发布成功：跳 success 页，或离开发布编辑页，或 URL 带 published=true（实测小红书发布后
+    # 跳 /publish/publish?...&published=true）
+    return ("publish/success" in u) or ("published=true" in u) or ("/publish/publish" not in u)
+for _ in range(15):
+    if _published(_url()):
+        print("OK 发布成功（已检测到 published=true / 成功页）"); sys.exit(0)
     time.sleep(1)
 print("还没检测到发布成功页。若已发布请按回车确认，否则点完发布再按回车。", file=sys.stderr)
 sys.stdin.readline()
-u = _url()
-if "publish/success" in u or "/publish/publish" not in u:
-    print("OK 已离开发布页，按成功处理"); sys.exit(0)
+if _published(_url()):
+    print("OK 发布成功"); sys.exit(0)
 print("ERR 仍停留在发布页，未检测到发布成功，按失败处理", file=sys.stderr); sys.exit(1)
 '''
 
