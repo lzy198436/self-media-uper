@@ -232,18 +232,25 @@ def cmd_mark(args) -> None:
     mats = M.scan(args.dir)
     picked = M.select(mats, args.items)
     names = [m.name for m in picked]
+    is_handout = getattr(args, "handout", False)
+    kind = "讲义" if is_handout else "投稿"
 
     def _mark(state):
-        published = platform_state(state, args.platform)["published"]
+        if is_handout:
+            from .state import handout_state
+            book = handout_state(state, args.platform)
+        else:
+            book = platform_state(state, args.platform)["published"]
         for name in names:
             if args.unmark:
-                published.pop(name, None)
-                print(f"  ↩️ 取消标记 {name}")
+                book.pop(name, None)
+                print(f"  ↩️ 取消标记{kind} {name}")
             else:
-                published.setdefault(name, {
+                book.setdefault(name, {
+                    "note": "图文讲义" if is_handout else "",
                     "bvid": "", "title": name, "source": "manual",
                     "at": datetime.now(timezone.utc).isoformat()})
-                print(f"  ✅ 标记已投稿 {name}")
+                print(f"  ✅ 标记已{kind} {name}")
     atomic_update(_mark)
 
 
@@ -489,6 +496,8 @@ def main() -> None:
     add_common(p)
     p.add_argument("items", nargs="+", help="序号/范围/文件夹名，如 1-10")
     p.add_argument("--unmark", action="store_true")
+    p.add_argument("--handout", action="store_true",
+                   help="标记图文讲义维度(handout_published)而非视频，校准小红书讲义用")
     p.set_defaults(func=cmd_mark)
 
     p = sub.add_parser("upload", help="投稿")

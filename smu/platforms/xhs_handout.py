@@ -70,10 +70,56 @@ a = ap.parse_args()
 sys.path.insert(0, a.scripts_dir)
 
 from xhs.bridge import BridgePage
-from xhs.publish import fill_publish_form
+from xhs.publish import (fill_publish_form, _navigate_to_publish_page,
+                         _upload_images, _fill_publish_form)
 from xhs.types import PublishImageContent
 
 PDF_INPUT = '.file-relation-container input[type="file"]'
+
+# 自己点「上传图文」tab：xhs-skills 的 _click_publish_tab 过滤太严(rect.left<0/
+# elementFromPoint 遮挡)，且页面常被别的扩展注入(button-hp-installed/data-hp-bound)
+# 干扰判定 → 点不中。这里宽容版：找 span.title=="上传图文" 的 .creator-tab，
+# 只跳过明显隐藏的(opacity极小/移出屏幕/aria-hidden)，对真实那个直接 click。
+_CLICK_IMAGE_TAB_JS = r"""
+(() => {
+  const tabs = document.querySelectorAll('div.creator-tab');
+  for (const tab of tabs) {
+    const span = tab.querySelector('span.title');
+    const txt = span ? span.textContent.trim() : tab.textContent.trim();
+    if (txt !== '上传图文') continue;
+    const st = window.getComputedStyle(tab);
+    const r = tab.getBoundingClientRect();
+    if (st.display === 'none' || st.visibility === 'hidden') continue;
+    if (parseFloat(st.opacity) < 0.01) continue;
+    if (tab.getAttribute('aria-hidden') === 'true') continue;
+    if (r.left < -1000 || r.top < -1000) continue;   // 移出屏幕的(left:-9999px)
+    tab.click();
+    return 'clicked';
+  }
+  return 'not_found';
+})()
+"""
+
+
+def _fill_image_form(page, content):
+    """替代 fill_publish_form：导航→自己宽容点图文 tab→传图→填表单(不发布)。"""
+    import time as _t
+    _navigate_to_publish_page(page)
+    deadline = _t.monotonic() + 15
+    clicked = False
+    while _t.monotonic() < deadline:
+        if page.evaluate(_CLICK_IMAGE_TAB_JS) == 'clicked':
+            clicked = True
+            break
+        _t.sleep(1)
+    if not clicked:
+        raise RuntimeError("没找到/点不中「上传图文」tab")
+    _t.sleep(1.5)
+    _upload_images(page, content.image_paths)
+    tags = content.tags[:10]
+    _fill_publish_form(page, content.title, content.content, tags,
+                       content.schedule_time, content.is_original, content.visibility)
+
 
 page = BridgePage("ws://localhost:9333")
 if not page.is_server_running():
@@ -86,9 +132,9 @@ tags = [t for t in a.tags.split(",") if t]
 content = PublishImageContent(title=a.title, content=a.content, tags=tags,
                               image_paths=[a.cover], is_original=False, visibility="")
 
-# 1) 传封面图 + 填标题/正文/话题（不点发布）——复用 xhs-skills 现成能力
+# 1) 传封面图 + 填标题/正文/话题（不点发布）
 try:
-    fill_publish_form(page, content)
+    _fill_image_form(page, content)
 except Exception as e:
     print(f"ERR 填表单/传封面失败：{e}", file=sys.stderr); sys.exit(2)
 
