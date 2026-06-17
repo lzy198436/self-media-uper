@@ -45,8 +45,8 @@ a = ap.parse_args()
 sys.path.insert(0, a.scripts_dir)
 
 from xhs.bridge import BridgePage
-from xhs.publish_video import (_navigate_to_publish_page, _upload_video,
-                               _fill_publish_video_form, _wait_for_publish_button_clickable)
+from xhs.publish_video import _navigate_to_publish_page, _fill_publish_video_form
+from xhs.selectors import UPLOAD_INPUT, FILE_INPUT
 
 # 宽容点「上传视频」tab：xhs-skills 的 _click_publish_tab 在被别的扩展注入(button-hp-installed)
 # 的页面上点不中(rect/elementFromPoint 过滤太严)。只跳明显隐藏的，对真实那个直接 click。
@@ -71,6 +71,26 @@ _CLICK_VIDEO_TAB_JS = r"""
 """
 
 # 封面 DOM 探查（联调用）：dump 含「封面」文本的可点元素 + 所有 file input 的 accept/容器。
+# 视频处理完成的标志：发布按钮出现且可点。小红书已改版——发布按钮是
+# <div class="publish-video"> 文案「发布笔记」（不再是旧 button.bg-red），自己判定。
+_PUBLISH_READY_JS = r"""
+(() => {
+  const cands = [...document.querySelectorAll('div, button')];
+  for (const e of cands) {
+    const t = (e.textContent || '').trim();
+    if (t === '发布笔记' || t === '发布') {
+      const r = e.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      const st = window.getComputedStyle(e);
+      if (st.display === 'none' || st.visibility === 'hidden') continue;
+      if (e.classList.contains('disabled') || e.getAttribute('aria-disabled') === 'true') continue;
+      return true;
+    }
+  }
+  return false;
+})()
+"""
+
 _COVER_DUMP_JS = r"""
 (() => {
   const out = [];
@@ -191,11 +211,30 @@ if not clicked:
 time.sleep(1.5)
 print("[step] 已点上传视频tab，开始传视频…", file=sys.stderr)
 
-# 2) 传视频 + 等处理完（_upload_video 内含 set_file_input + 等发布按钮可点，最长约10min）
+# 2) 传视频（用视频专属 input，避开封面 input）+ 自己等「发布笔记」出现=视频处理完
 try:
-    _upload_video(page, a.video)
+    import os as _os
+    if not _os.path.exists(a.video):
+        print(f"ERR 视频文件不存在：{a.video}", file=sys.stderr); sys.exit(2)
+    vsel = UPLOAD_INPUT if page.has_element(UPLOAD_INPUT) else FILE_INPUT
+    page.set_file_input(vsel, [a.video])
 except Exception as e:
-    print(f"ERR 传视频/等待处理失败：{e}", file=sys.stderr); sys.exit(2)
+    print(f"ERR 灌视频失败：{e}", file=sys.stderr); sys.exit(2)
+# 等视频处理完成（发布按钮出现，最长10min）。每30s打印一次进度，避免看着像卡死。
+_dl = time.monotonic() + 600
+_ready = False
+while time.monotonic() < _dl:
+    try:
+        if page.evaluate(_PUBLISH_READY_JS):
+            _ready = True; break
+    except Exception:
+        pass
+    el = int(time.monotonic() - (_dl - 600))
+    if el and el % 30 == 0:
+        print(f"[step] 视频处理中…已等 {el}s（大视频较慢，请耐心）", file=sys.stderr)
+    time.sleep(2)
+if not _ready:
+    print("ERR 等视频处理超时(10分钟)，或发布按钮没出现（页面可能改版）", file=sys.stderr); sys.exit(2)
 
 print("[step] 视频已传完、处理完，开始填标题/正文/标签…", file=sys.stderr)
 # 3) 填标题/正文/标签（不点发布）
