@@ -181,8 +181,28 @@ def install() -> None:
         try:
             from uploader.douyin_uploader.main import DouYinBaseUploader
 
+            async def _dismiss_guide_overlay(page):
+                """关掉抖音创作页的新功能引导浮层。每次开浏览器都可能弹，且会拦截 pointer
+                events 挡住后续点击（实测把「自主声明」点击卡到 30s 超时）。无害幂等：
+                找到「我知道了/知道了/下一步」这类引导按钮就点掉，找不到就跳过。"""
+                labels = ["我知道了", "知道了", "我知道啦", "下一步", "跳过", "完成引导", "开始使用"]
+                for _ in range(6):  # 引导可能多步,连点几轮直到没有
+                    clicked = False
+                    for lab in labels:
+                        try:
+                            btn = page.get_by_text(lab, exact=True).first
+                            if await btn.count() and await btn.is_visible():
+                                await btn.click(timeout=1500, force=True)
+                                clicked = True
+                                await page.wait_for_timeout(400)
+                        except Exception:
+                            continue
+                    if not clicked:
+                        break
+
             async def robust_declaration(self, page, declaration=decl):
                 try:
+                    await _dismiss_guide_overlay(page)   # 先清掉引导浮层,避免拦截点击
                     entry = page.get_by_text("请选择自主声明").first
                     await entry.wait_for(state="visible", timeout=8000)
                     await entry.click()
@@ -228,6 +248,18 @@ def install() -> None:
                     print(f"[smu] 自主声明设置失败：{exc}")
 
             DouYinBaseUploader.set_self_declaration = robust_declaration
+
+            # 封面步骤(set_thumbnail)在声明之前,引导浮层最早在这一步挡住点击
+            # (用户实测:浮层弹出→封面「完成」点不动)。给封面也包一层:先关浮层再走原逻辑。
+            _orig_set_thumbnail = getattr(DouYinBaseUploader, "set_thumbnail", None)
+            if _orig_set_thumbnail is not None:
+                async def set_thumbnail_with_dismiss(self, page, _orig=_orig_set_thumbnail):
+                    try:
+                        await _dismiss_guide_overlay(page)
+                    except Exception:
+                        pass
+                    return await _orig(self, page)
+                DouYinBaseUploader.set_thumbnail = set_thumbnail_with_dismiss
         except Exception:
             pass
 
