@@ -42,16 +42,25 @@ _PROFILES = {
     "steady":       {"interval": (300, 720),  "daily_cap": 10},   # 稳健（默认）：5~12 分钟，10
     "conservative": {"interval": (600, 1200), "daily_cap": 5},    # 保守：10~20 分钟，5
 }
-# B站 API 上传，间隔从 30~90 秒拉长到 3~8 分钟：实测一次性集中连发会被判机器批量、全部
-# 压低推荐（"浏览量低"真因）。拉长间隔 + 单次别堆太多，避免集中批量限流。
-_BILIBILI_INTERVAL = (180, 480)
+# B站 API 上传间隔。原为 3~8 分钟防集中批量,用户实测间隔不影响播放量,改回 1~2 分钟提速。
+_BILIBILI_INTERVAL = (60, 120)
+
+# 各平台默认发布间隔 60-120 秒(用户要求:发完一条 1-2 分钟随机就发下一条,不再等 10 分钟)。
+# 注意:抖音/视频号是浏览器自动化,1-2 分钟连发"机器批量"特征比 B站 API 高,是用户明确选择。
+# 想放慢仍可用 --min-interval/--max-interval 覆盖。
+_PLATFORM_DEFAULT_INTERVAL = {
+    "bilibili":    (60, 120),
+    "douyin":      (60, 120),
+    "shipinhao":   (60, 120),
+    "xiaohongshu": (60, 120),
+}
 
 # 各平台安全节奏（按 2026 纯内容/不带货平台规则内置）：编排默认按此守安全线。
 #   interval=条间随机间隔秒；daily_cap=单日稳妥上限(0=无硬日限但别集中)；soft=单次编排软上限
 _PLATFORM_LIMITS = {
-    "bilibili":  {"interval": (180, 480),   "daily_cap": 0,  "soft": 8},   # B站无官方日限，但别集中批量
-    "douyin":    {"interval": (1200, 1800), "daily_cap": 10, "soft": 10},  # 个人号稳妥≤10、间隔≥20min
-    "shipinhao": {"interval": (900, 1500),  "daily_cap": 8,  "soft": 8},   # 稳妥≤8、错峰
+    "bilibili":  {"interval": (60, 120),   "daily_cap": 0,  "soft": 8},
+    "douyin":    {"interval": (60, 120),   "daily_cap": 10, "soft": 10},
+    "shipinhao": {"interval": (60, 120),   "daily_cap": 8,  "soft": 8},
 }
 
 
@@ -60,12 +69,13 @@ def _profile(args) -> dict:
 
 
 def resolve_interval(args) -> tuple[int, int]:
-    """返回 (最小秒, 最大秒)。优先命令行 --min/--max，否则 B站用快档、其它用 profile 档位。"""
+    """返回 (最小秒, 最大秒)。优先命令行 --min/--max；否则用平台默认间隔(B站/抖音/视频号
+    /小红书均 60-120 秒)，不在表里的平台回退 profile 档位。"""
     lo = getattr(args, "min_interval", None)
     hi = getattr(args, "max_interval", None)
     if lo is None or hi is None:
-        if args.platform == "bilibili":
-            d_lo, d_hi = _BILIBILI_INTERVAL
+        if args.platform in _PLATFORM_DEFAULT_INTERVAL:
+            d_lo, d_hi = _PLATFORM_DEFAULT_INTERVAL[args.platform]
         else:
             d_lo, d_hi = _profile(args)["interval"]
         lo = d_lo if lo is None else lo
