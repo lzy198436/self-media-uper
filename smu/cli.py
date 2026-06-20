@@ -285,6 +285,16 @@ def cmd_upload(args) -> None:
     state = load_state()
     published = platform_state(state, args.platform)["published"]
 
+    # 发布前 cookie 预检：支持 cookie_valid() 的平台(B站)在这里真验证,失效直接提示重登,
+    # 不浪费后续上传。抖音/视频号无法零成本预检(要开浏览器),走"首条失效即停"(见发布循环)。
+    if not args.dry_run and hasattr(platform, "cookie_valid"):
+        try:
+            valid = platform.cookie_valid()
+        except Exception:
+            valid = True   # 验证本身异常(网络等)不阻断,留给上传时再判
+        if not valid:
+            fail(f"{args.platform} cookie 已失效或未登录：请先运行 smu login --platform {args.platform} 重新扫码")
+
     if args.all:
         targets = [m for m in mats if m.name not in published]
     elif args.items:
@@ -385,6 +395,13 @@ def cmd_upload(args) -> None:
         try:
             record = platform.publish(mat, state, args)
         except Exception as e:
+            # cookie 失效:立即中止整批,不再跑剩余条目(避免每条等间隔后才失败的浪费)
+            if type(e).__name__ == "SauCookieError":
+                print(f"\n🛑 {args.platform} cookie 已失效,中止本批(已发 {i} 条,剩 {len(targets)-i} 条未发)。",
+                      file=sys.stderr)
+                print(f"   请运行: smu login --platform {args.platform} 重新扫码,然后重跑即可接着发。",
+                      file=sys.stderr)
+                fail(str(e))
             failed.append(mat.name)
             print(f"    ❌ 失败：{e}", file=sys.stderr)
             record = None

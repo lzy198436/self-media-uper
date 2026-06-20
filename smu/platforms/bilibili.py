@@ -70,6 +70,18 @@ class BilibiliAdapter(PlatformAdapter):
         self._ensure_cookie_file()
         return COOKIE_FILE.is_file()
 
+    def cookie_valid(self) -> bool:
+        """真验证 B站 cookie 是否有效：调 member 只读接口,code==0 才算活。
+        发布前预检用——cookie 文件在但已过期时这里返回 False(避免整批投稿失败)。"""
+        if not self.is_logged_in():
+            return False
+        try:
+            # /x/web/archives 是已在用的只读稿件列表接口,cookie 失效会返回非 0
+            self._member_api("/x/web/archives?status=pubed&pn=1&ps=1")
+            return True
+        except Exception:
+            return False
+
     def login(self) -> None:
         SMU_HOME.mkdir(parents=True, exist_ok=True)
         print(f"登录态将保存到 {COOKIE_FILE}（请选「扫码登录」）")

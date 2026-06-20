@@ -54,6 +54,22 @@ class SauError(RuntimeError):
     pass
 
 
+class SauCookieError(SauError):
+    """cookie 失效/未登录专用错误。上层据此"首条失效即停",避免整批白跑后才发现掉线。"""
+    pass
+
+
+# sau 输出里表示登录态失效的信号(视频号/抖音通用)
+_COOKIE_EXPIRED_MARKERS = (
+    "未确认到登录态",
+    "cookie is missing or expired",
+    "cookie 失效",
+    "cookie 已过期",
+    "请先完成登录",
+    "Run `sau",
+)
+
+
 def _sau_python() -> str:
     py = SAU_DIR / ".venv" / "bin" / "python"
     if not py.is_file():
@@ -296,6 +312,10 @@ class SauAdapter(PlatformAdapter):
             # 输出已在 _run_sau 里实时透传过了，这里不再重复打印，只用 out 判断结果
             ok = proc.returncode == 0 and ("发布成功" in out or "submitted" in out or "upload submitted" in out.lower())
             if not ok:
+                # cookie 失效单独抛 SauCookieError → 上层首条失效即停,不白跑剩余条目
+                if any(mk in out for mk in _COOKIE_EXPIRED_MARKERS):
+                    raise SauCookieError(
+                        f"{self.name} 账号「{acct}」cookie 已失效：请运行 smu login --platform {self.name} 重新扫码")
                 raise SauError(f"sau 退出码 {proc.returncode}")
         return {
             "id": "",            # sau 不回 aweme_id，留空
